@@ -42,6 +42,7 @@ def fetch_stock_prices():
         response = requests.get(url)
         soup = BeautifulSoup(response.text, "html.parser")
         price_element = soup.select_one('fin-streamer[data-field="regularMarketPrice"]')
+        print(f"Price element: {price_element}")
         if price_element:
             stock_data.append({
                 "symbol": symbol,
@@ -59,7 +60,7 @@ def save_stock_prices(stock_data):
     session.commit()
     
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
-    session.query(StockPrice).filter(StockPrice.timestamp < cutoff_time.delete())
+    session.query(StockPrice).filter(StockPrice.timestamp < cutoff_time).delete(synchronize_session=False)
     
     session.commit()
 
