@@ -14,7 +14,7 @@ session = Session()
 
 Base.metadata.create_all(engine)
 
-API_TOKEN = '664b29d204ac45.47949212'
+API_TOKEN = os.environ.get('API_TOKEN')
 EXCHANGES = ['HM', 'PA', 'US']
 API_URL = 'https://eodhd.com/api/exchange-symbol-list/{exchange_code}?api_token=' + API_TOKEN
 
