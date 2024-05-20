@@ -3,7 +3,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from models import StockSymbol  
 
 Base = declarative_base()
@@ -56,6 +56,11 @@ def save_stock_prices(stock_data):
     for entry in stock_data:
         stock_price = StockPrice(symbol=entry["symbol"], name=entry["name"], price=entry["price"])
         session.add(stock_price)
+    session.commit()
+    
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+    session.query(StockPrice).filter(StockPrice.timestamp < cutoff_time.delete())
+    
     session.commit()
 
 if __name__ == "__main__":
