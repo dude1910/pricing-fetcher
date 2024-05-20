@@ -10,6 +10,7 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("No DATABASE_URL environment variable set")
 
+print(f"database url: {DATABASE_URL}")
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 session = Session()
