@@ -1,15 +1,12 @@
 import requests
 from bs4 import BeautifulSoup
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 from datetime import datetime, timezone
 from models import StockSymbol  
 
-
 Base = declarative_base()
-
 
 class StockPrice(Base):
     __tablename__ = 'stock_prices'
@@ -19,21 +16,17 @@ class StockPrice(Base):
     price = Column(Float, nullable=False)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("No DATABASE_URL environment variable set")
-
 
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 session = Session()
 
-
 Base.metadata.create_all(engine)
 
 YAHOO_URL = "https://finance.yahoo.com/quote"
-
 
 def fetch_stock_prices():
     print("Trying to fetch stock prices")
@@ -58,7 +51,6 @@ def fetch_stock_prices():
         else:
             print(f"Error fetching data for symbol: {symbol}")
     return stock_data
-
 
 def save_stock_prices(stock_data):
     for entry in stock_data:
