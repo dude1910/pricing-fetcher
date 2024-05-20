@@ -36,7 +36,11 @@ YAHOO_URL = "https://finance.yahoo.com/quote"
 
 
 def fetch_stock_prices():
+    print("Trying to fetch stock prices")
     stock_symbols = session.query(StockSymbol).all()
+    if not stock_symbols:
+        print("No stock symbols found in the database.")
+        return []
     stock_data = []
     for stock_symbol in stock_symbols:
         symbol = stock_symbol.symbol
