@@ -40,13 +40,12 @@ def fetch_stock_prices():
         name = stock_symbol.name
         try:
             stock = yf.Ticker(symbol)
-            price_data = stock.history(period="1d", interval="1m")
-            if not price_data.empty:
-                latest_price = price_data['Close'].iloc[-1]
+            price_data = stock.info.get("currentPrice")
+            if price_data is not None:
                 stock_data.append({
                     "symbol": symbol,
                     "name": name,
-                    "price": latest_price
+                    "price": price_data
                 })
             else:
                 print(f"No price data for symbol: {symbol}")
@@ -63,7 +62,7 @@ def save_stock_prices(stock_data, batch_size=20):
         except Exception as e:
             session.rollback()
             print(f"Error saving batch: {e}")
-            time.sleep(5)  # wait before retrying
+            time.sleep(5)  
             try:
                 session.bulk_save_objects([StockPrice(**entry) for entry in batch])
                 session.commit()
