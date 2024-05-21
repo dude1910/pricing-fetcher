@@ -39,7 +39,9 @@ def fetch_stock_prices():
         symbol = stock_symbol.symbol
         name = stock_symbol.name
         try:
+            print(symbol)
             stock = yf.Ticker(symbol)
+            print(stock)
             price_data = stock.info.get("currentPrice")
             if price_data is not None:
                 stock_data.append({
