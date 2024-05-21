@@ -20,7 +20,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests beautifulsoup4 sqlalchemy psycopg2-binary
+        pip install yfinance sqlalchemy psycopg2-binary
 
     - name: Run scraping script
       env:

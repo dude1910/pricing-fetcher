@@ -1,5 +1,4 @@
-import requests
-from bs4 import BeautifulSoup
+import yfinance as yf
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
@@ -39,19 +38,20 @@ def fetch_stock_prices():
     for stock_symbol in stock_symbols:
         symbol = stock_symbol.symbol
         name = stock_symbol.name
-        url = f"{YAHOO_URL}/{symbol}"
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        price_element = soup.select_one('fin-streamer[data-field="regularMarketPrice"]')
-        print(f"Price element: {price_element}")
-        if price_element:
-            stock_data.append({
-                "symbol": symbol,
-                "name": name,
-                "price": float(price_element["data-value"])
-            })
-        else:
-            print(f"Error fetching data for symbol: {symbol}")
+        try:
+            stock = yf.Ticker(symbol)
+            price_data = stock.history(period="1d", interval="1m")
+            if not price_data.empty:
+                latest_price = price_data['Close'].iloc[-1]
+                stock_data.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "price": latest_price
+                })
+            else:
+                print(f"No price data for symbol: {symbol}")
+        except Exception as e:
+            print(f"Error fetching data for symbol: {symbol}, Error: {e}")
     return stock_data
 
 def save_stock_prices(stock_data, batch_size=20):
