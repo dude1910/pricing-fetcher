@@ -1,7 +1,5 @@
-import yfinance as yf
 from pyfinviz.screener import Screener
 import pandas as pd
-import requests
 import os
 from sqlalchemy import create_engine, Column, String
 from sqlalchemy.ext.declarative import declarative_base
@@ -44,10 +42,9 @@ def save_symbols_to_db(tickers_df, exchange):
     session.commit()
 
 def update_symbols():
-    exchanges = ['NASDAQ', 'NYSE', 'AMEX']  
-    for exchange in exchanges:
-        tickers_df = fetch_tickers_from_finviz(pages_to_fetch=600)  
-        save_symbols_to_db(tickers_df, exchange)
+    exchange = 'NASDAQ'  
+    tickers_df = fetch_tickers_from_finviz(pages_to_fetch=600)
+    save_symbols_to_db(tickers_df, exchange)
 
 if __name__ == "__main__":
     update_symbols()
