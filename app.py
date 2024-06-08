@@ -3,12 +3,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
 from models import Base, StockSymbol
+import sqlalchemy.dialects.postgresql  
 
 app = Flask(__name__)
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("No DATABASE_URL environment variable set")
+
+
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://")
 
 print(f"database url: {DATABASE_URL}")
 engine = create_engine(DATABASE_URL)
