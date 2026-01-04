@@ -8,7 +8,7 @@ on:
 jobs:
   scrape-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
 
     steps:
     - name: Checkout repository
@@ -38,11 +38,10 @@ jobs:
         VOLUME_MULTIPLIER: ${{ vars.VOLUME_MULTIPLIER || '2.0' }}
         ALERT_LOOKBACK_HOURS: ${{ vars.ALERT_LOOKBACK_HOURS || '1.0' }}
         ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS || '4.0' }}
-        BATCH_SIZE: ${{ vars.BATCH_SIZE || '500' }}
-        SYMBOLS_PER_RUN: ${{ vars.SYMBOLS_PER_RUN || '2000' }}
+        BATCH_SIZE: ${{ vars.BATCH_SIZE || '300' }}
+        SYMBOLS_PER_RUN: ${{ vars.SYMBOLS_PER_RUN || '500' }}
         QUARANTINE_DAYS: ${{ vars.QUARANTINE_DAYS || '7' }}
-      run: |
-        python scrape_prices.py
+      run: python scrape_prices.py
 
     - name: Track alert outcomes
       env:

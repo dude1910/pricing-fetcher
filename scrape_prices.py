@@ -6,6 +6,9 @@ from datetime import datetime, timezone, timedelta
 from models import StockSymbol
 import time
 
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
 Base = declarative_base()
 
 class StockPrice(Base):
@@ -33,9 +36,11 @@ session = Session()
 
 Base.metadata.create_all(engine)
 
-BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '500'))
-SYMBOLS_PER_RUN = int(os.environ.get('SYMBOLS_PER_RUN', '2000'))
+BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '300'))
+SYMBOLS_PER_RUN = int(os.environ.get('SYMBOLS_PER_RUN', '500'))
 QUARANTINE_DAYS = int(os.environ.get('QUARANTINE_DAYS', '7'))
+
+log(f"Config: BATCH={BATCH_SIZE}, SYMBOLS={SYMBOLS_PER_RUN}")
 
 def get_active_symbols():
     now = datetime.now(timezone.utc)
@@ -73,10 +78,11 @@ def quarantine_symbols(symbols):
         print(f"Error quarantining symbols: {e}")
 
 def fetch_stock_prices():
-    print("Fetching stock prices...")
+    log("Fetching stock prices...")
     
     active_query = get_active_symbols()
     total_active = active_query.count()
+    log(f"Total active symbols: {total_active}")
     
     offset = get_rotation_offset() % max(total_active, 1)
     
@@ -88,23 +94,24 @@ def fetch_stock_prices():
         stock_symbols.extend(more_symbols)
     
     if not stock_symbols:
-        print("No active stock symbols found.")
+        log("No active stock symbols found.")
         return [], []
     
     all_symbols = [s.symbol for s in stock_symbols]
     symbol_names = {s.symbol: s.name for s in stock_symbols}
     
-    print(f"Active symbols: {total_active}, Fetching: {len(all_symbols)} (offset: {offset})")
+    log(f"Fetching {len(all_symbols)} symbols (offset: {offset})")
     
     stock_data = []
     failed_symbols = []
     
     for i in range(0, len(all_symbols), BATCH_SIZE):
+        batch_start = time.time()
         batch_symbols = all_symbols[i:i + BATCH_SIZE]
         batch_num = (i // BATCH_SIZE) + 1
         total_batches = (len(all_symbols) + BATCH_SIZE - 1) // BATCH_SIZE
         
-        print(f"Batch {batch_num}/{total_batches} ({len(batch_symbols)} symbols)...")
+        log(f"Batch {batch_num}/{total_batches} ({len(batch_symbols)} symbols)...")
         
         try:
             tickers = yf.Tickers(" ".join(batch_symbols))
@@ -142,16 +149,19 @@ def fetch_stock_prices():
                     failed_symbols.append(symbol)
                     continue
             
+            batch_time = time.time() - batch_start
+            log(f"Batch {batch_num} done in {batch_time:.1f}s - got {len(stock_data)} prices so far")
+            
             if i + BATCH_SIZE < len(all_symbols):
-                time.sleep(0.5)
+                time.sleep(0.3)
                 
         except Exception as e:
-            print(f"Batch {batch_num} failed: {e}")
+            log(f"Batch {batch_num} failed: {e}")
             failed_symbols.extend(batch_symbols)
-            time.sleep(1)
+            time.sleep(0.5)
             continue
     
-    print(f"Fetched {len(stock_data)} prices, {len(failed_symbols)} failed")
+    log(f"Fetched {len(stock_data)} prices, {len(failed_symbols)} failed")
     
     return stock_data, failed_symbols
 
