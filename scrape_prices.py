@@ -83,3 +83,10 @@ def save_stock_prices(stock_data, batch_size=20):
 if __name__ == "__main__":
     stock_data = fetch_stock_prices()
     save_stock_prices(stock_data)
+    
+    # Check for price alerts and send notifications
+    try:
+        from alerts import check_price_alerts
+        check_price_alerts(session, StockPrice)
+    except Exception as e:
+        print(f"Alert check failed: {e}")

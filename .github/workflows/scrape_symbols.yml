@@ -2,7 +2,8 @@ name: Scrape Stock Prices
 
 on:
   schedule:
-    - cron: "*/60 * * * *"  
+    - cron: "*/15 * * * *"
+  workflow_dispatch: 
 
 jobs:
   scrape-prices:
@@ -10,20 +11,26 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
-        python-version: 3.x
+        python-version: '3.11'
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance sqlalchemy psycopg2-binary
+        pip install yfinance sqlalchemy psycopg2-binary requests
 
-    - name: Run scraping script
+    - name: Run scraping script with alerts
       env:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        ALERT_THRESHOLD_PERCENT: ${{ vars.ALERT_THRESHOLD_PERCENT || '3.0' }}
+        ALERT_LOOKBACK_HOURS: ${{ vars.ALERT_LOOKBACK_HOURS || '1.0' }}
+        ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS || '4.0' }}
       run: |
         python scrape_prices.py
+
