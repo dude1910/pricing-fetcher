@@ -1,5 +1,5 @@
 import yfinance as yf
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, or_
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, BigInteger, or_
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 from datetime import datetime, timezone, timedelta
@@ -14,6 +14,7 @@ class StockPrice(Base):
     symbol = Column(String, nullable=False)
     name = Column(String, nullable=True)
     price = Column(Float, nullable=False)
+    volume = Column(BigInteger, nullable=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -37,29 +38,22 @@ SYMBOLS_PER_RUN = int(os.environ.get('SYMBOLS_PER_RUN', '2000'))
 QUARANTINE_DAYS = int(os.environ.get('QUARANTINE_DAYS', '7'))
 
 def get_active_symbols():
-    """Get symbols that are not quarantined"""
     now = datetime.now(timezone.utc)
-    
     query = session.query(StockSymbol).filter(
         or_(
             StockSymbol.quarantined_until == None,
             StockSymbol.quarantined_until < now
         )
     )
-    
     return query
 
 def get_rotation_offset():
-    """Calculate offset based on time to rotate through all symbols"""
     current_hour = datetime.now(timezone.utc).hour
     current_minute = datetime.now(timezone.utc).minute
-    
-    # Each 15-minute slot gets a different batch
     slot = (current_hour * 4) + (current_minute // 15)
-    return (slot * SYMBOLS_PER_RUN) % 50000  # Wrap around
+    return (slot * SYMBOLS_PER_RUN) % 50000
 
 def quarantine_symbols(symbols):
-    """Put failed symbols in quarantine for QUARANTINE_DAYS"""
     if not symbols:
         return
     
@@ -67,7 +61,7 @@ def quarantine_symbols(symbols):
     
     try:
         count = 0
-        for symbol in symbols[:100]:  # Limit to avoid long queries
+        for symbol in symbols[:100]:
             result = session.query(StockSymbol).filter(
                 StockSymbol.symbol == symbol
             ).update({StockSymbol.quarantined_until: quarantine_until})
@@ -79,20 +73,15 @@ def quarantine_symbols(symbols):
         print(f"Error quarantining symbols: {e}")
 
 def fetch_stock_prices():
-    """Fetch stock prices with rotation and quarantine support"""
     print("Fetching stock prices...")
     
-    # Get active (non-quarantined) symbols
     active_query = get_active_symbols()
     total_active = active_query.count()
     
-    # Get rotation offset
     offset = get_rotation_offset() % max(total_active, 1)
     
-    # Get batch of symbols for this run
     stock_symbols = active_query.offset(offset).limit(SYMBOLS_PER_RUN).all()
     
-    # If we got less than expected, wrap around from beginning
     if len(stock_symbols) < SYMBOLS_PER_RUN and offset > 0:
         remaining = SYMBOLS_PER_RUN - len(stock_symbols)
         more_symbols = active_query.limit(remaining).all()
@@ -110,7 +99,6 @@ def fetch_stock_prices():
     stock_data = []
     failed_symbols = []
     
-    # Process in batches
     for i in range(0, len(all_symbols), BATCH_SIZE):
         batch_symbols = all_symbols[i:i + BATCH_SIZE]
         batch_num = (i // BATCH_SIZE) + 1
@@ -130,17 +118,22 @@ def fetch_stock_prices():
                     
                     info = ticker.fast_info
                     price = None
+                    volume = None
                     
                     if hasattr(info, 'last_price') and info.last_price:
                         price = info.last_price
                     elif hasattr(info, 'previous_close') and info.previous_close:
                         price = info.previous_close
                     
+                    if hasattr(info, 'last_volume') and info.last_volume:
+                        volume = int(info.last_volume)
+                    
                     if price is not None and price > 0:
                         stock_data.append({
                             "symbol": symbol,
                             "name": symbol_names.get(symbol),
-                            "price": float(price)
+                            "price": float(price),
+                            "volume": volume
                         })
                     else:
                         failed_symbols.append(symbol)
@@ -163,7 +156,6 @@ def fetch_stock_prices():
     return stock_data, failed_symbols
 
 def save_stock_prices(stock_data, batch_size=50):
-    """Save stock prices to database"""
     global session
     
     if not stock_data:
@@ -187,7 +179,6 @@ def save_stock_prices(stock_data, batch_size=50):
     
     print(f"Saved {saved_count}/{len(stock_data)} prices")
     
-    # Clean old records
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
         deleted = session.query(StockPrice).filter(
@@ -203,11 +194,9 @@ if __name__ == "__main__":
     stock_data, failed_symbols = fetch_stock_prices()
     save_stock_prices(stock_data)
     
-    # Quarantine failed symbols
     if failed_symbols:
         quarantine_symbols(failed_symbols)
     
-    # Check for price alerts
     try:
         from alerts import check_price_alerts
         check_price_alerts(session, StockPrice)

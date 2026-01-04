@@ -1,7 +1,3 @@
-"""
-Add quarantined_until column to stock_symbols table.
-Run this once to migrate the database.
-"""
 import os
 from sqlalchemy import create_engine, text
 
@@ -17,21 +13,31 @@ if "sslmode" not in DATABASE_URL:
 
 engine = create_engine(DATABASE_URL)
 
+migrations = [
+    ("stock_symbols", "quarantined_until", "TIMESTAMP"),
+    ("stock_prices", "volume", "BIGINT"),
+    ("alert_history", "volume", "BIGINT"),
+    ("alert_history", "volume_ratio", "FLOAT"),
+]
+
 with engine.connect() as conn:
-    result = conn.execute(text("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'stock_symbols' 
-        AND column_name = 'quarantined_until'
-    """))
-    
-    if result.fetchone() is None:
-        print("Adding quarantined_until column...")
-        conn.execute(text("""
-            ALTER TABLE stock_symbols 
-            ADD COLUMN quarantined_until TIMESTAMP
+    for table, column, col_type in migrations:
+        result = conn.execute(text(f"""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = '{table}' 
+            AND column_name = '{column}'
         """))
-        conn.commit()
-        print("Column added successfully!")
-    else:
-        print("Column already exists, skipping.")
+        
+        if result.fetchone() is None:
+            print(f"Adding {table}.{column}...")
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                conn.commit()
+                print(f"  Added!")
+            except Exception as e:
+                print(f"  Skipped: {e}")
+        else:
+            print(f"{table}.{column} exists")
+    
+    print("Migration complete!")
