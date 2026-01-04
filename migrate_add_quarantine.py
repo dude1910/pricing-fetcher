@@ -20,24 +20,32 @@ migrations = [
     ("alert_history", "volume_ratio", "FLOAT"),
 ]
 
-with engine.connect() as conn:
-    for table, column, col_type in migrations:
-        result = conn.execute(text(f"""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = '{table}' 
-            AND column_name = '{column}'
-        """))
-        
-        if result.fetchone() is None:
-            print(f"Adding {table}.{column}...")
-            try:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
-                conn.commit()
-                print(f"  Added!")
-            except Exception as e:
-                print(f"  Skipped: {e}")
-        else:
-            print(f"{table}.{column} exists")
-    
-    print("Migration complete!")
+for table, column, col_type in migrations:
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = '{table}' 
+                AND column_name = '{column}'
+            """))
+            
+            if result.fetchone() is None:
+                table_exists = conn.execute(text(f"""
+                    SELECT table_name FROM information_schema.tables 
+                    WHERE table_name = '{table}'
+                """)).fetchone()
+                
+                if table_exists:
+                    print(f"Adding {table}.{column}...")
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                    conn.commit()
+                    print(f"  Added!")
+                else:
+                    print(f"{table} doesn't exist yet, skipping {column}")
+            else:
+                print(f"{table}.{column} exists")
+    except Exception as e:
+        print(f"Skipped {table}.{column}: {e}")
+
+print("Migration complete!")
