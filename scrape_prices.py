@@ -5,9 +5,11 @@ import os
 from datetime import datetime, timezone, timedelta
 from models import StockSymbol
 import time
+import signal
+import sys
 
 def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 Base = declarative_base()
 
@@ -36,21 +38,32 @@ session = Session()
 
 Base.metadata.create_all(engine)
 
-BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '300'))
-SYMBOLS_PER_RUN = int(os.environ.get('SYMBOLS_PER_RUN', '500'))
+BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '100'))
+SYMBOLS_PER_RUN = int(os.environ.get('SYMBOLS_PER_RUN', '300'))
 QUARANTINE_DAYS = int(os.environ.get('QUARANTINE_DAYS', '7'))
+MAX_RUNTIME_SECONDS = int(os.environ.get('MAX_RUNTIME_SECONDS', '480'))
 
-log(f"Config: BATCH={BATCH_SIZE}, SYMBOLS={SYMBOLS_PER_RUN}")
+start_time = time.time()
+stock_data_global = []
+failed_symbols_global = []
+
+def time_remaining():
+    elapsed = time.time() - start_time
+    return MAX_RUNTIME_SECONDS - elapsed
+
+def should_stop():
+    return time_remaining() < 60
+
+log(f"Config: BATCH={BATCH_SIZE}, SYMBOLS={SYMBOLS_PER_RUN}, MAX_TIME={MAX_RUNTIME_SECONDS}s")
 
 def get_active_symbols():
     now = datetime.now(timezone.utc)
-    query = session.query(StockSymbol).filter(
+    return session.query(StockSymbol).filter(
         or_(
             StockSymbol.quarantined_until == None,
             StockSymbol.quarantined_until < now
         )
     )
-    return query
 
 def get_rotation_offset():
     current_hour = datetime.now(timezone.utc).hour
@@ -66,35 +79,76 @@ def quarantine_symbols(symbols):
     
     try:
         count = 0
-        for symbol in symbols[:100]:
+        for symbol in symbols[:50]:
             result = session.query(StockSymbol).filter(
                 StockSymbol.symbol == symbol
             ).update({StockSymbol.quarantined_until: quarantine_until})
             count += result
         session.commit()
-        print(f"Quarantined {count} symbols for {QUARANTINE_DAYS} days")
+        log(f"Quarantined {count} symbols")
     except Exception as e:
         session.rollback()
-        print(f"Error quarantining symbols: {e}")
+
+def fetch_batch_fast(symbols, symbol_names):
+    if not symbols:
+        return [], []
+    
+    stock_data = []
+    failed = []
+    
+    try:
+        data = yf.download(
+            symbols,
+            period="1d",
+            interval="1d",
+            progress=False,
+            threads=True,
+            timeout=30
+        )
+        
+        if data.empty:
+            return [], symbols
+        
+        for symbol in symbols:
+            try:
+                if len(symbols) == 1:
+                    close = data['Close'].iloc[-1] if 'Close' in data else None
+                    vol = data['Volume'].iloc[-1] if 'Volume' in data else None
+                else:
+                    close = data['Close'][symbol].iloc[-1] if symbol in data['Close'].columns else None
+                    vol = data['Volume'][symbol].iloc[-1] if symbol in data['Volume'].columns else None
+                
+                if close and close > 0 and not (hasattr(close, 'isna') and close.isna()):
+                    stock_data.append({
+                        "symbol": symbol,
+                        "name": symbol_names.get(symbol),
+                        "price": float(close),
+                        "volume": int(vol) if vol and not (hasattr(vol, 'isna') and vol.isna()) else None
+                    })
+                else:
+                    failed.append(symbol)
+            except:
+                failed.append(symbol)
+    except Exception as e:
+        log(f"Download error: {e}")
+        failed = symbols
+    
+    return stock_data, failed
 
 def fetch_stock_prices():
+    global stock_data_global, failed_symbols_global
+    
     log("Fetching stock prices...")
     
     active_query = get_active_symbols()
     total_active = active_query.count()
-    log(f"Total active symbols: {total_active}")
+    log(f"Active symbols: {total_active}")
     
     offset = get_rotation_offset() % max(total_active, 1)
-    
     stock_symbols = active_query.offset(offset).limit(SYMBOLS_PER_RUN).all()
     
-    if len(stock_symbols) < SYMBOLS_PER_RUN and offset > 0:
-        remaining = SYMBOLS_PER_RUN - len(stock_symbols)
-        more_symbols = active_query.limit(remaining).all()
-        stock_symbols.extend(more_symbols)
-    
     if not stock_symbols:
-        log("No active stock symbols found.")
+        log("No symbols found")
         return [], []
     
     all_symbols = [s.symbol for s in stock_symbols]
@@ -106,6 +160,10 @@ def fetch_stock_prices():
     failed_symbols = []
     
     for i in range(0, len(all_symbols), BATCH_SIZE):
+        if should_stop():
+            log(f"Time limit approaching, stopping early. Got {len(stock_data)} prices.")
+            break
+        
         batch_start = time.time()
         batch_symbols = all_symbols[i:i + BATCH_SIZE]
         batch_num = (i // BATCH_SIZE) + 1
@@ -113,56 +171,19 @@ def fetch_stock_prices():
         
         log(f"Batch {batch_num}/{total_batches} ({len(batch_symbols)} symbols)...")
         
-        try:
-            tickers = yf.Tickers(" ".join(batch_symbols))
-            
-            for symbol in batch_symbols:
-                try:
-                    ticker = tickers.tickers.get(symbol)
-                    if ticker is None:
-                        failed_symbols.append(symbol)
-                        continue
-                    
-                    info = ticker.fast_info
-                    price = None
-                    volume = None
-                    
-                    if hasattr(info, 'last_price') and info.last_price:
-                        price = info.last_price
-                    elif hasattr(info, 'previous_close') and info.previous_close:
-                        price = info.previous_close
-                    
-                    if hasattr(info, 'last_volume') and info.last_volume:
-                        volume = int(info.last_volume)
-                    
-                    if price is not None and price > 0:
-                        stock_data.append({
-                            "symbol": symbol,
-                            "name": symbol_names.get(symbol),
-                            "price": float(price),
-                            "volume": volume
-                        })
-                    else:
-                        failed_symbols.append(symbol)
-                        
-                except Exception as e:
-                    failed_symbols.append(symbol)
-                    continue
-            
-            batch_time = time.time() - batch_start
-            log(f"Batch {batch_num} done in {batch_time:.1f}s - got {len(stock_data)} prices so far")
-            
-            if i + BATCH_SIZE < len(all_symbols):
-                time.sleep(0.3)
-                
-        except Exception as e:
-            log(f"Batch {batch_num} failed: {e}")
-            failed_symbols.extend(batch_symbols)
-            time.sleep(0.5)
-            continue
+        data, failed = fetch_batch_fast(batch_symbols, symbol_names)
+        stock_data.extend(data)
+        failed_symbols.extend(failed)
+        
+        batch_time = time.time() - batch_start
+        log(f"Batch {batch_num} done in {batch_time:.1f}s - {len(data)} prices, {len(failed)} failed")
+        
+        time.sleep(0.2)
     
-    log(f"Fetched {len(stock_data)} prices, {len(failed_symbols)} failed")
+    stock_data_global = stock_data
+    failed_symbols_global = failed_symbols
     
+    log(f"Total: {len(stock_data)} prices, {len(failed_symbols)} failed")
     return stock_data, failed_symbols
 
 def save_stock_prices(stock_data, batch_size=50):
@@ -171,7 +192,9 @@ def save_stock_prices(stock_data, batch_size=50):
     if not stock_data:
         return
     
+    log(f"Saving {len(stock_data)} prices...")
     saved_count = 0
+    
     for i in range(0, len(stock_data), batch_size):
         batch = stock_data[i:i + batch_size]
         try:
@@ -180,14 +203,13 @@ def save_stock_prices(stock_data, batch_size=50):
             saved_count += len(batch)
         except Exception as e:
             session.rollback()
-            print(f"Error saving batch: {e}")
             try:
                 session.close()
                 session = Session()
             except:
                 pass
     
-    print(f"Saved {saved_count}/{len(stock_data)} prices")
+    log(f"Saved {saved_count} prices")
     
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
@@ -196,19 +218,29 @@ def save_stock_prices(stock_data, batch_size=50):
         ).delete(synchronize_session=False)
         session.commit()
         if deleted:
-            print(f"Cleaned up {deleted} old records")
-    except Exception as e:
+            log(f"Cleaned {deleted} old records")
+    except:
         session.rollback()
 
 if __name__ == "__main__":
-    stock_data, failed_symbols = fetch_stock_prices()
-    save_stock_prices(stock_data)
-    
-    if failed_symbols:
-        quarantine_symbols(failed_symbols)
-    
     try:
-        from alerts import check_price_alerts
-        check_price_alerts(session, StockPrice)
+        stock_data, failed_symbols = fetch_stock_prices()
+        save_stock_prices(stock_data)
+        
+        if failed_symbols:
+            quarantine_symbols(failed_symbols)
+        
+        try:
+            from alerts import check_price_alerts
+            check_price_alerts(session, StockPrice)
+        except Exception as e:
+            log(f"Alert check: {e}")
+        
+        elapsed = time.time() - start_time
+        log(f"Done in {elapsed:.0f}s")
+        
     except Exception as e:
-        print(f"Alert check failed: {e}")
+        log(f"Error: {e}")
+        if stock_data_global:
+            log(f"Saving {len(stock_data_global)} prices before exit...")
+            save_stock_prices(stock_data_global)

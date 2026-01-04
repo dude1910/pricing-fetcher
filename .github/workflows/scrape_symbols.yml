@@ -8,7 +8,7 @@ on:
 jobs:
   scrape-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 14
 
     steps:
     - name: Checkout repository
@@ -20,16 +20,14 @@ jobs:
         python-version: '3.11'
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install yfinance sqlalchemy psycopg2-binary requests
+      run: pip install yfinance sqlalchemy psycopg2-binary requests
 
     - name: Run database migration
       env:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
       run: python migrate_add_quarantine.py
 
-    - name: Run scraping script with alerts
+    - name: Scrape prices
       env:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -38,12 +36,15 @@ jobs:
         VOLUME_MULTIPLIER: ${{ vars.VOLUME_MULTIPLIER || '2.0' }}
         ALERT_LOOKBACK_HOURS: ${{ vars.ALERT_LOOKBACK_HOURS || '1.0' }}
         ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS || '4.0' }}
-        BATCH_SIZE: ${{ vars.BATCH_SIZE || '300' }}
-        SYMBOLS_PER_RUN: ${{ vars.SYMBOLS_PER_RUN || '500' }}
-        QUARANTINE_DAYS: ${{ vars.QUARANTINE_DAYS || '7' }}
+        BATCH_SIZE: '100'
+        SYMBOLS_PER_RUN: '300'
+        MAX_RUNTIME_SECONDS: '420'
+        QUARANTINE_DAYS: '7'
       run: python scrape_prices.py
 
-    - name: Track alert outcomes
+    - name: Track outcomes
+      if: always()
       env:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      run: python backtest.py check
+      run: python backtest.py check || true
+
