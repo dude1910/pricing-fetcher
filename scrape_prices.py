@@ -20,7 +20,13 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("No DATABASE_URL environment variable set")
 
-engine = create_engine(DATABASE_URL, connect_args={"options": "-c statement_timeout=30000"})  # 30 second timeout
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://")
+
+if "sslmode" not in DATABASE_URL:
+    DATABASE_URL += "?sslmode=require" if "?" not in DATABASE_URL else "&sslmode=require"
+
+engine = create_engine(DATABASE_URL, connect_args={"options": "-c statement_timeout=30000"})
 Session = sessionmaker(bind=engine)
 session = Session()
 

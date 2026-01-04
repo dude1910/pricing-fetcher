@@ -51,6 +51,9 @@ def get_db_session():
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql+psycopg2://")
     
+    if "sslmode" not in database_url:
+        database_url += "?sslmode=require" if "?" not in database_url else "&sslmode=require"
+    
     engine = create_engine(database_url)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
