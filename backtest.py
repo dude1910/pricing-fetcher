@@ -243,21 +243,24 @@ Timeframe | Avg Profit | Win Rate
 
 
 def sync_alerts_to_outcomes():
-    from alerts import AlertHistory
-    
-    recent_alerts = session.query(AlertHistory).filter(
-        AlertHistory.sent_at >= datetime.now(timezone.utc) - timedelta(days=30)
-    ).all()
-    
-    for alert in recent_alerts:
-        create_outcome_from_alert(
-            alert_id=alert.id,
-            symbol=alert.symbol,
-            alert_type=alert.alert_type,
-            alert_time=alert.sent_at,
-            alert_price=alert.price_after,
-            volume_ratio=getattr(alert, 'volume_ratio', None)
-        )
+    try:
+        from alerts import AlertHistory
+        
+        recent_alerts = session.query(AlertHistory).filter(
+            AlertHistory.sent_at >= datetime.now(timezone.utc) - timedelta(days=30)
+        ).all()
+        
+        for alert in recent_alerts:
+            create_outcome_from_alert(
+                alert_id=alert.id,
+                symbol=alert.symbol,
+                alert_type=alert.alert_type,
+                alert_time=alert.sent_at,
+                alert_price=alert.price_after,
+                volume_ratio=getattr(alert, 'volume_ratio', None)
+            )
+    except Exception as e:
+        print(f"No alerts to sync yet: {e}")
 
 
 if __name__ == "__main__":

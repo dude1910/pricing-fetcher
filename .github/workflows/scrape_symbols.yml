@@ -2,7 +2,7 @@ name: Scrape Stock Prices
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/15 14-22 * * 1-5"
   workflow_dispatch: 
 
 jobs:
