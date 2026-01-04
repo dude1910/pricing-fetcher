@@ -1,5 +1,5 @@
 import yfinance as yf
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, or_
 from sqlalchemy.orm import declarative_base, sessionmaker
 import os
 from datetime import datetime, timezone, timedelta
@@ -26,45 +26,97 @@ if DATABASE_URL.startswith("postgres://"):
 if "sslmode" not in DATABASE_URL:
     DATABASE_URL += "?sslmode=require" if "?" not in DATABASE_URL else "&sslmode=require"
 
-engine = create_engine(DATABASE_URL, connect_args={"options": "-c statement_timeout=30000"})
+engine = create_engine(DATABASE_URL, connect_args={"options": "-c statement_timeout=60000"})
 Session = sessionmaker(bind=engine)
 session = Session()
 
 Base.metadata.create_all(engine)
 
-YAHOO_URL = "https://finance.yahoo.com/quote"
+BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '500'))
+SYMBOLS_PER_RUN = int(os.environ.get('SYMBOLS_PER_RUN', '2000'))
+QUARANTINE_DAYS = int(os.environ.get('QUARANTINE_DAYS', '7'))
 
-BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '200'))
+def get_active_symbols():
+    """Get symbols that are not quarantined"""
+    now = datetime.now(timezone.utc)
+    
+    query = session.query(StockSymbol).filter(
+        or_(
+            StockSymbol.quarantined_until == None,
+            StockSymbol.quarantined_until < now
+        )
+    )
+    
+    return query
 
-MAX_SYMBOLS = int(os.environ.get('MAX_SYMBOLS', '0'))
+def get_rotation_offset():
+    """Calculate offset based on time to rotate through all symbols"""
+    current_hour = datetime.now(timezone.utc).hour
+    current_minute = datetime.now(timezone.utc).minute
+    
+    # Each 15-minute slot gets a different batch
+    slot = (current_hour * 4) + (current_minute // 15)
+    return (slot * SYMBOLS_PER_RUN) % 50000  # Wrap around
+
+def quarantine_symbols(symbols):
+    """Put failed symbols in quarantine for QUARANTINE_DAYS"""
+    if not symbols:
+        return
+    
+    quarantine_until = datetime.now(timezone.utc) + timedelta(days=QUARANTINE_DAYS)
+    
+    try:
+        count = 0
+        for symbol in symbols[:100]:  # Limit to avoid long queries
+            result = session.query(StockSymbol).filter(
+                StockSymbol.symbol == symbol
+            ).update({StockSymbol.quarantined_until: quarantine_until})
+            count += result
+        session.commit()
+        print(f"Quarantined {count} symbols for {QUARANTINE_DAYS} days")
+    except Exception as e:
+        session.rollback()
+        print(f"Error quarantining symbols: {e}")
 
 def fetch_stock_prices():
-    """Fetch ALL stock prices using batch downloading with fast_info"""
-    print("Fetching stock prices (batch mode - ALL symbols)...")
+    """Fetch stock prices with rotation and quarantine support"""
+    print("Fetching stock prices...")
     
-    if MAX_SYMBOLS > 0:
-        stock_symbols = session.query(StockSymbol).limit(MAX_SYMBOLS).all()
-    else:
-        stock_symbols = session.query(StockSymbol).all()
+    # Get active (non-quarantined) symbols
+    active_query = get_active_symbols()
+    total_active = active_query.count()
+    
+    # Get rotation offset
+    offset = get_rotation_offset() % max(total_active, 1)
+    
+    # Get batch of symbols for this run
+    stock_symbols = active_query.offset(offset).limit(SYMBOLS_PER_RUN).all()
+    
+    # If we got less than expected, wrap around from beginning
+    if len(stock_symbols) < SYMBOLS_PER_RUN and offset > 0:
+        remaining = SYMBOLS_PER_RUN - len(stock_symbols)
+        more_symbols = active_query.limit(remaining).all()
+        stock_symbols.extend(more_symbols)
     
     if not stock_symbols:
-        print("No stock symbols found in the database.")
-        return []
+        print("No active stock symbols found.")
+        return [], []
     
     all_symbols = [s.symbol for s in stock_symbols]
     symbol_names = {s.symbol: s.name for s in stock_symbols}
     
-    print(f"Total symbols to fetch: {len(all_symbols)}")
+    print(f"Active symbols: {total_active}, Fetching: {len(all_symbols)} (offset: {offset})")
     
     stock_data = []
     failed_symbols = []
     
+    # Process in batches
     for i in range(0, len(all_symbols), BATCH_SIZE):
         batch_symbols = all_symbols[i:i + BATCH_SIZE]
         batch_num = (i // BATCH_SIZE) + 1
         total_batches = (len(all_symbols) + BATCH_SIZE - 1) // BATCH_SIZE
         
-        print(f"Processing batch {batch_num}/{total_batches} ({len(batch_symbols)} symbols)...")
+        print(f"Batch {batch_num}/{total_batches} ({len(batch_symbols)} symbols)...")
         
         try:
             tickers = yf.Tickers(" ".join(batch_symbols))
@@ -97,52 +149,65 @@ def fetch_stock_prices():
                     failed_symbols.append(symbol)
                     continue
             
-            # Small delay between batches to be nice to Yahoo
             if i + BATCH_SIZE < len(all_symbols):
-                time.sleep(1)
+                time.sleep(0.5)
                 
         except Exception as e:
             print(f"Batch {batch_num} failed: {e}")
             failed_symbols.extend(batch_symbols)
-            time.sleep(2)  
+            time.sleep(1)
             continue
     
-    print(f"Successfully fetched {len(stock_data)} stock prices")
-    if failed_symbols:
-        print(f"Failed to fetch {len(failed_symbols)} symbols")
+    print(f"Fetched {len(stock_data)} prices, {len(failed_symbols)} failed")
     
-    return stock_data
+    return stock_data, failed_symbols
 
-def save_stock_prices(stock_data, batch_size=20):
+def save_stock_prices(stock_data, batch_size=50):
+    """Save stock prices to database"""
+    global session
+    
+    if not stock_data:
+        return
+    
+    saved_count = 0
     for i in range(0, len(stock_data), batch_size):
         batch = stock_data[i:i + batch_size]
         try:
             session.bulk_save_objects([StockPrice(**entry) for entry in batch])
             session.commit()
+            saved_count += len(batch)
         except Exception as e:
             session.rollback()
             print(f"Error saving batch: {e}")
-            time.sleep(5)  
             try:
-                session.bulk_save_objects([StockPrice(**entry) for entry in batch])
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                print(f"Error saving batch after retry: {e}")
-
+                session.close()
+                session = Session()
+            except:
+                pass
+    
+    print(f"Saved {saved_count}/{len(stock_data)} prices")
+    
+    # Clean old records
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
-        session.query(StockPrice).filter(StockPrice.timestamp < cutoff_time).delete(synchronize_session=False)
+        deleted = session.query(StockPrice).filter(
+            StockPrice.timestamp < cutoff_time
+        ).delete(synchronize_session=False)
         session.commit()
+        if deleted:
+            print(f"Cleaned up {deleted} old records")
     except Exception as e:
         session.rollback()
-        print(f"Error deleting old records: {e}")
 
 if __name__ == "__main__":
-    stock_data = fetch_stock_prices()
+    stock_data, failed_symbols = fetch_stock_prices()
     save_stock_prices(stock_data)
     
-    # Check for price alerts and send notifications
+    # Quarantine failed symbols
+    if failed_symbols:
+        quarantine_symbols(failed_symbols)
+    
+    # Check for price alerts
     try:
         from alerts import check_price_alerts
         check_price_alerts(session, StockPrice)

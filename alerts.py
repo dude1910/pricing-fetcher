@@ -125,13 +125,19 @@ def check_price_alerts(session, stock_prices_model):
     """
     print(f"\nChecking for price alerts...")
     
+    try:
+        session.rollback()
+    except:
+        pass
+    
     # Get alert configurations
     alerts_config = {}
     try:
         for alert in session.query(PriceAlert).filter(PriceAlert.enabled == True).all():
             alerts_config[alert.symbol] = alert.threshold_percent
     except Exception as e:
-        print(f"No custom alerts configured, using defaults: {e}")
+        print(f"No custom alerts configured, using defaults")
+        session.rollback()
     
     # Calculate lookback time
     lookback_time = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
