@@ -37,8 +37,8 @@ jobs:
         ALERT_LOOKBACK_HOURS: ${{ vars.ALERT_LOOKBACK_HOURS || '1.0' }}
         ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS || '4.0' }}
         BATCH_SIZE: '100'
-        SYMBOLS_PER_RUN: '300'
-        MAX_RUNTIME_SECONDS: '420'
+        SYMBOLS_PER_RUN: '1000'
+        MAX_RUNTIME_SECONDS: '600'
         QUARANTINE_DAYS: '7'
       run: python scrape_prices.py
 

@@ -87,23 +87,28 @@ def format_alert_message(symbol: str, name: str, price_before: float, price_afte
     if alert_type == 'volume_spike_up':
         emoji = "🚀📈🔥"
         direction = "UP"
+        signal_strength = "🔥 VOLUME SPIKE - STRONG SIGNAL"
     elif alert_type == 'volume_spike_down':
         emoji = "🔻📉🔥"
         direction = "DOWN"
-    elif alert_type == 'spike_up':
-        emoji = "📈"
+        signal_strength = "🔥 VOLUME SPIKE - STRONG SIGNAL"
+    elif alert_type == 'extreme_up':
+        emoji = "🚨📈💥"
         direction = "UP"
-    else:
-        emoji = "📉"
+        signal_strength = "⚠️ EXTREME MOVE"
+    elif alert_type == 'extreme_down':
+        emoji = "🚨📉💥"
         direction = "DOWN"
+        signal_strength = "⚠️ EXTREME MOVE"
+    else:
+        emoji = "📈" if 'up' in alert_type else "📉"
+        direction = "UP" if 'up' in alert_type else "DOWN"
+        signal_strength = "Signal"
     
     volume_text = ""
-    if volume and volume_ratio:
+    if volume and volume_ratio and volume_ratio > 1.0:
         volume_formatted = f"{volume:,}"
         volume_text = f"\n📊 Volume: <code>{volume_formatted}</code> ({volume_ratio:.1f}x avg)"
-    
-    is_volume_spike = "volume" in alert_type
-    signal_strength = "🔥 STRONG SIGNAL" if is_volume_spike else "Signal"
     
     message = f"""
 {emoji} <b>{symbol}</b> {direction} {abs(percent_change):.1f}% {emoji}
@@ -244,18 +249,27 @@ def check_price_alerts(session, stock_prices_model):
             
             threshold = alerts_config.get(symbol, DEFAULT_THRESHOLD_PERCENT)
             
-            is_price_spike = abs(percent_change) >= threshold
+            # NEW SMART ALERT LOGIC:
+            # 1. Volume Spike Alert: price change >= threshold AND volume >= 2x (HIGH QUALITY)
+            # 2. Extreme Move Alert: price change >= 15% regardless of volume (EMERGENCY)
+            # 3. NO MORE noisy "regular spike" alerts without volume confirmation!
+            
+            is_significant_move = abs(percent_change) >= threshold
             is_volume_spike = volume_ratio and volume_ratio >= VOLUME_MULTIPLIER
+            is_extreme_move = abs(percent_change) >= 15.0  # 15% is extreme
             
             should_alert = False
             alert_type = None
             
-            if is_price_spike and is_volume_spike:
+            # Priority 1: Volume-confirmed signals (best quality)
+            if is_significant_move and is_volume_spike:
                 should_alert = True
                 alert_type = 'volume_spike_up' if percent_change > 0 else 'volume_spike_down'
-            elif is_price_spike and abs(percent_change) >= threshold * 1.5:
+            
+            # Priority 2: Extreme moves (catch black swans even without volume data)
+            elif is_extreme_move:
                 should_alert = True
-                alert_type = 'spike_up' if percent_change > 0 else 'spike_down'
+                alert_type = 'extreme_up' if percent_change > 0 else 'extreme_down'
             
             if not should_alert:
                 continue
