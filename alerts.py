@@ -126,11 +126,20 @@ def check_price_alerts(session, stock_prices_model):
     func_start = time_module.time()
     print(f"\nChecking for alerts...")
     
+    # Get engine from session and ensure alert_history table exists
+    try:
+        engine = session.get_bind()
+        Base.metadata.create_all(engine)
+        print("[TIMING] Ensured alert_history table exists")
+    except Exception as e:
+        print(f"Warning: Could not create tables: {e}")
+    
     try:
         session.rollback()
     except:
         pass
     
+    # Load custom alert thresholds
     alerts_config = {}
     try:
         for alert in session.query(PriceAlert).filter(PriceAlert.enabled == True).all():
@@ -146,8 +155,9 @@ def check_price_alerts(session, stock_prices_model):
     avg_volume_lookback = datetime.now(timezone.utc) - timedelta(hours=8)
     
     try:
-        from sqlalchemy import func
+        from sqlalchemy import func, and_
         
+        # STEP 1: Get latest prices for all symbols (single query)
         step_start = time_module.time()
         latest_subq = session.query(
             stock_prices_model.symbol,
@@ -156,55 +166,81 @@ def check_price_alerts(session, stock_prices_model):
         
         latest_prices = session.query(stock_prices_model).join(
             latest_subq,
-            (stock_prices_model.symbol == latest_subq.c.symbol) & 
-            (stock_prices_model.timestamp == latest_subq.c.max_ts)
+            and_(
+                stock_prices_model.symbol == latest_subq.c.symbol,
+                stock_prices_model.timestamp == latest_subq.c.max_ts
+            )
         ).all()
         
-        print(f"[TIMING] Query latest prices ({len(latest_prices)} symbols): {time_module.time() - step_start:.1f}s")
+        # Build lookup dict
+        current_data = {p.symbol: {'price': p.price, 'volume': getattr(p, 'volume', None), 'name': p.name} for p in latest_prices}
+        symbols = list(current_data.keys())
         
+        print(f"[TIMING] Query latest prices ({len(symbols)} symbols): {time_module.time() - step_start:.1f}s")
+        
+        # STEP 2: Get historical prices for all symbols (single query)
+        step_start = time_module.time()
+        historical_subq = session.query(
+            stock_prices_model.symbol,
+            func.max(stock_prices_model.timestamp).label('max_ts')
+        ).filter(
+            stock_prices_model.timestamp <= lookback_time
+        ).group_by(stock_prices_model.symbol).subquery()
+        
+        historical_prices = session.query(stock_prices_model).join(
+            historical_subq,
+            and_(
+                stock_prices_model.symbol == historical_subq.c.symbol,
+                stock_prices_model.timestamp == historical_subq.c.max_ts
+            )
+        ).all()
+        
+        historical_data = {p.symbol: p.price for p in historical_prices}
+        print(f"[TIMING] Query historical prices ({len(historical_data)} symbols): {time_module.time() - step_start:.1f}s")
+        
+        # STEP 3: Get average volumes for all symbols (single query)
+        step_start = time_module.time()
+        avg_volumes_query = session.query(
+            stock_prices_model.symbol,
+            func.avg(stock_prices_model.volume).label('avg_vol')
+        ).filter(
+            stock_prices_model.timestamp >= avg_volume_lookback,
+            stock_prices_model.volume != None,
+            stock_prices_model.volume > 0
+        ).group_by(stock_prices_model.symbol).all()
+        
+        avg_volumes = {row.symbol: float(row.avg_vol) for row in avg_volumes_query if row.avg_vol}
+        print(f"[TIMING] Query avg volumes ({len(avg_volumes)} symbols): {time_module.time() - step_start:.1f}s")
+        
+        # STEP 4: Get recent alerts for cooldown check (single query)
+        step_start = time_module.time()
+        recent_alerts = session.query(AlertHistory.symbol).filter(
+            AlertHistory.sent_at > cooldown_time
+        ).distinct().all()
+        
+        cooldown_symbols = {a.symbol for a in recent_alerts}
+        print(f"[TIMING] Query cooldown alerts ({len(cooldown_symbols)} in cooldown): {time_module.time() - step_start:.1f}s")
+        
+        # STEP 5: Process all symbols in memory (no more DB queries in loop!)
+        step_start = time_module.time()
         alerts_sent = 0
-        loop_start = time_module.time()
-        symbols_checked = 0
-        candidates_found = 0
+        candidates = []
         
-        for current in latest_prices:
-            symbols_checked += 1
-            symbol = current.symbol
-            current_price = current.price
-            current_volume = getattr(current, 'volume', None)
+        for symbol in symbols:
+            current_price = current_data[symbol]['price']
+            current_volume = current_data[symbol]['volume']
             
-            historical = session.query(stock_prices_model).filter(
-                stock_prices_model.symbol == symbol,
-                stock_prices_model.timestamp <= lookback_time
-            ).order_by(stock_prices_model.timestamp.desc()).first()
-            
-            if not historical:
+            historical_price = historical_data.get(symbol)
+            if not historical_price or historical_price == 0:
                 continue
             
-            historical_price = historical.price
-            
-            if historical_price == 0:
-                continue
-                
             percent_change = ((current_price - historical_price) / historical_price) * 100
             
-            avg_volume = None
+            # Calculate volume ratio
             volume_ratio = None
-            
-            if current_volume and hasattr(stock_prices_model, 'volume'):
-                try:
-                    avg_result = session.query(func.avg(stock_prices_model.volume)).filter(
-                        stock_prices_model.symbol == symbol,
-                        stock_prices_model.timestamp >= avg_volume_lookback,
-                        stock_prices_model.volume != None,
-                        stock_prices_model.volume > 0
-                    ).scalar()
-                    
-                    if avg_result and avg_result > 0:
-                        avg_volume = float(avg_result)
-                        volume_ratio = current_volume / avg_volume
-                except:
-                    pass
+            avg_vol = avg_volumes.get(symbol)
+            if current_volume and avg_vol and avg_vol > 0:
+                volume_ratio = current_volume / avg_vol
             
             threshold = alerts_config.get(symbol, DEFAULT_THRESHOLD_PERCENT)
             
@@ -224,44 +260,55 @@ def check_price_alerts(session, stock_prices_model):
             if not should_alert:
                 continue
             
-            candidates_found += 1
-            
-            recent_alert = session.query(AlertHistory).filter(
-                AlertHistory.symbol == symbol,
-                AlertHistory.sent_at > cooldown_time
-            ).first()
-            
-            if recent_alert:
+            # Check cooldown
+            if symbol in cooldown_symbols:
                 continue
             
+            candidates.append({
+                'symbol': symbol,
+                'name': current_data[symbol]['name'],
+                'historical_price': historical_price,
+                'current_price': current_price,
+                'percent_change': percent_change,
+                'alert_type': alert_type,
+                'volume': current_volume,
+                'volume_ratio': volume_ratio
+            })
+        
+        print(f"[TIMING] Process candidates ({len(candidates)} found): {time_module.time() - step_start:.1f}s")
+        
+        # STEP 6: Send alerts
+        step_start = time_module.time()
+        for c in candidates:
             message = format_alert_message(
-                symbol=symbol,
-                name=current.name,
-                price_before=historical_price,
-                price_after=current_price,
-                percent_change=percent_change,
-                alert_type=alert_type,
-                volume=current_volume,
-                volume_ratio=volume_ratio
+                symbol=c['symbol'],
+                name=c['name'],
+                price_before=c['historical_price'],
+                price_after=c['current_price'],
+                percent_change=c['percent_change'],
+                alert_type=c['alert_type'],
+                volume=c['volume'],
+                volume_ratio=c['volume_ratio']
             )
             
-            print(f"ALERT: {symbol} {percent_change:.1f}% (vol: {volume_ratio:.1f}x)" if volume_ratio else f"ALERT: {symbol} {percent_change:.1f}%")
+            vol_str = f" (vol: {c['volume_ratio']:.1f}x)" if c['volume_ratio'] else ""
+            print(f"ALERT: {c['symbol']} {c['percent_change']:.1f}%{vol_str}")
             
             if send_telegram_message(message):
                 alert_record = AlertHistory(
-                    symbol=symbol,
-                    alert_type=alert_type,
-                    price_before=historical_price,
-                    price_after=current_price,
-                    percent_change=percent_change,
-                    volume=current_volume,
-                    volume_ratio=volume_ratio
+                    symbol=c['symbol'],
+                    alert_type=c['alert_type'],
+                    price_before=c['historical_price'],
+                    price_after=c['current_price'],
+                    percent_change=c['percent_change'],
+                    volume=c['volume'],
+                    volume_ratio=c['volume_ratio']
                 )
                 session.add(alert_record)
                 session.commit()
                 alerts_sent += 1
         
-        print(f"[TIMING] Symbol loop ({symbols_checked} checked, {candidates_found} candidates): {time_module.time() - loop_start:.1f}s")
+        print(f"[TIMING] Send alerts: {time_module.time() - step_start:.1f}s")
         print(f"Sent {alerts_sent} alerts")
         print(f"[TIMING] Total check_price_alerts: {time_module.time() - func_start:.1f}s")
         return alerts_sent
