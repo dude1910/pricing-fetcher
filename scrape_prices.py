@@ -224,23 +224,40 @@ def save_stock_prices(stock_data, batch_size=50):
 
 if __name__ == "__main__":
     try:
+        step_start = time.time()
         stock_data, failed_symbols = fetch_stock_prices()
+        log(f"[TIMING] fetch_stock_prices: {time.time() - step_start:.1f}s")
+        
+        step_start = time.time()
         save_stock_prices(stock_data)
+        log(f"[TIMING] save_stock_prices: {time.time() - step_start:.1f}s")
         
         if failed_symbols:
+            step_start = time.time()
             quarantine_symbols(failed_symbols)
+            log(f"[TIMING] quarantine_symbols: {time.time() - step_start:.1f}s")
         
         try:
+            log("Starting alert check...")
+            step_start = time.time()
             from alerts import check_price_alerts
+            log(f"[TIMING] import alerts: {time.time() - step_start:.1f}s")
+            
+            step_start = time.time()
             check_price_alerts(session, StockPrice)
+            log(f"[TIMING] check_price_alerts: {time.time() - step_start:.1f}s")
         except Exception as e:
-            log(f"Alert check: {e}")
+            log(f"Alert check error: {e}")
+            import traceback
+            traceback.print_exc()
         
         elapsed = time.time() - start_time
         log(f"Done in {elapsed:.0f}s")
         
     except Exception as e:
         log(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         if stock_data_global:
             log(f"Saving {len(stock_data_global)} prices before exit...")
             save_stock_prices(stock_data_global)

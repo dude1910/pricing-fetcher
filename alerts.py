@@ -122,6 +122,8 @@ def format_alert_message(symbol: str, name: str, price_before: float, price_afte
 
 
 def check_price_alerts(session, stock_prices_model):
+    import time as time_module
+    func_start = time_module.time()
     print(f"\nChecking for alerts...")
     
     try:
@@ -137,6 +139,8 @@ def check_price_alerts(session, stock_prices_model):
         print(f"Using default alerts")
         session.rollback()
     
+    print(f"[TIMING] Load alerts config: {time_module.time() - func_start:.1f}s")
+    
     lookback_time = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
     cooldown_time = datetime.now(timezone.utc) - timedelta(hours=ALERT_COOLDOWN_HOURS)
     avg_volume_lookback = datetime.now(timezone.utc) - timedelta(hours=8)
@@ -144,6 +148,7 @@ def check_price_alerts(session, stock_prices_model):
     try:
         from sqlalchemy import func
         
+        step_start = time_module.time()
         latest_subq = session.query(
             stock_prices_model.symbol,
             func.max(stock_prices_model.timestamp).label('max_ts')
@@ -155,9 +160,15 @@ def check_price_alerts(session, stock_prices_model):
             (stock_prices_model.timestamp == latest_subq.c.max_ts)
         ).all()
         
+        print(f"[TIMING] Query latest prices ({len(latest_prices)} symbols): {time_module.time() - step_start:.1f}s")
+        
         alerts_sent = 0
+        loop_start = time_module.time()
+        symbols_checked = 0
+        candidates_found = 0
         
         for current in latest_prices:
+            symbols_checked += 1
             symbol = current.symbol
             current_price = current.price
             current_volume = getattr(current, 'volume', None)
@@ -213,6 +224,8 @@ def check_price_alerts(session, stock_prices_model):
             if not should_alert:
                 continue
             
+            candidates_found += 1
+            
             recent_alert = session.query(AlertHistory).filter(
                 AlertHistory.symbol == symbol,
                 AlertHistory.sent_at > cooldown_time
@@ -248,7 +261,9 @@ def check_price_alerts(session, stock_prices_model):
                 session.commit()
                 alerts_sent += 1
         
+        print(f"[TIMING] Symbol loop ({symbols_checked} checked, {candidates_found} candidates): {time_module.time() - loop_start:.1f}s")
         print(f"Sent {alerts_sent} alerts")
+        print(f"[TIMING] Total check_price_alerts: {time_module.time() - func_start:.1f}s")
         return alerts_sent
         
     except Exception as e:

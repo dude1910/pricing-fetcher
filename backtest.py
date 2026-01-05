@@ -244,12 +244,16 @@ Timeframe | Avg Profit | Win Rate
 
 def sync_alerts_to_outcomes():
     try:
-        from alerts import AlertHistory
+        from alerts import AlertHistory, Base as AlertsBase
+        
+        # Ensure alert_history table exists
+        AlertsBase.metadata.create_all(engine)
         
         recent_alerts = session.query(AlertHistory).filter(
             AlertHistory.sent_at >= datetime.now(timezone.utc) - timedelta(days=30)
         ).all()
         
+        synced = 0
         for alert in recent_alerts:
             create_outcome_from_alert(
                 alert_id=alert.id,
@@ -259,8 +263,15 @@ def sync_alerts_to_outcomes():
                 alert_price=alert.price_after,
                 volume_ratio=getattr(alert, 'volume_ratio', None)
             )
+            synced += 1
+        
+        if synced:
+            print(f"Synced {synced} alerts to outcomes")
+        else:
+            print("No new alerts to sync")
+            
     except Exception as e:
-        print(f"No alerts to sync yet: {e}")
+        print(f"Alert sync skipped: {e}")
 
 
 if __name__ == "__main__":
