@@ -8,7 +8,7 @@ on:
 jobs:
   scrape-prices:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 18
 
     steps:
     - name: Checkout repository
