@@ -113,7 +113,11 @@ def check_outcomes():
     print(f"Found {len(outcomes_to_check)} outcomes to check")
     
     for outcome in outcomes_to_check:
-        hours_since_alert = (now - outcome.alert_time).total_seconds() / 3600
+        # Ensure alert_time is timezone-aware (DB stores as naive UTC)
+        alert_time = outcome.alert_time
+        if alert_time.tzinfo is None:
+            alert_time = alert_time.replace(tzinfo=timezone.utc)
+        hours_since_alert = (now - alert_time).total_seconds() / 3600
         
         current_price = get_current_price(outcome.symbol)
         if not current_price:
