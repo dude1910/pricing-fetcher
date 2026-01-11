@@ -103,6 +103,8 @@ def create_outcome_from_alert(alert_id: int, symbol: str, alert_type: str,
 
 
 def check_outcomes():
+    import yfinance as yf
+    
     print("Checking alert outcomes...")
     now = datetime.now(timezone.utc)
     print(f"[DEBUG] now = {now}, tzinfo = {now.tzinfo}")
@@ -113,27 +115,55 @@ def check_outcomes():
     
     print(f"Found {len(outcomes_to_check)} outcomes to check")
     
-    for idx, outcome in enumerate(outcomes_to_check):
-        # Log first 3 outcomes for debugging
-        if idx < 3:
-            print(f"[DEBUG] outcome.alert_time = {outcome.alert_time}, type = {type(outcome.alert_time)}, tzinfo = {getattr(outcome.alert_time, 'tzinfo', 'N/A')}")
+    if not outcomes_to_check:
+        print("No outcomes to check")
+        return
+    
+    # Get unique symbols
+    symbols = list(set(o.symbol for o in outcomes_to_check))
+    print(f"[DEBUG] Fetching prices for {len(symbols)} unique symbols in batch...")
+    
+    # Batch download all prices at once (MUCH faster than individual requests)
+    current_prices = {}
+    try:
+        # yfinance batch download
+        data = yf.download(symbols, period="1d", progress=False, threads=True)
         
+        if len(symbols) == 1:
+            # Single symbol returns Series, not DataFrame with MultiIndex
+            symbol = symbols[0]
+            if 'Close' in data and len(data['Close']) > 0:
+                current_prices[symbol] = float(data['Close'].iloc[-1])
+        else:
+            # Multiple symbols returns DataFrame with MultiIndex columns
+            if 'Close' in data.columns.get_level_values(0):
+                close_prices = data['Close']
+                for symbol in symbols:
+                    if symbol in close_prices.columns:
+                        price = close_prices[symbol].dropna()
+                        if len(price) > 0:
+                            current_prices[symbol] = float(price.iloc[-1])
+        
+        print(f"[DEBUG] Got prices for {len(current_prices)} symbols")
+    except Exception as e:
+        print(f"[ERROR] Batch download failed: {e}")
+        return
+    
+    # Debug: log first 3 outcomes
+    for idx, outcome in enumerate(outcomes_to_check[:3]):
+        print(f"[DEBUG] outcome.alert_time = {outcome.alert_time}, type = {type(outcome.alert_time)}, tzinfo = {getattr(outcome.alert_time, 'tzinfo', 'N/A')}")
+    
+    # Process all outcomes
+    updated_count = 0
+    for outcome in outcomes_to_check:
         # Ensure alert_time is timezone-aware (DB stores as naive UTC)
         alert_time = outcome.alert_time
         if alert_time.tzinfo is None:
-            if idx < 3:
-                print(f"[DEBUG] alert_time is naive, adding UTC timezone")
             alert_time = alert_time.replace(tzinfo=timezone.utc)
-        
-        if idx < 3:
-            print(f"[DEBUG] after fix: alert_time = {alert_time}, tzinfo = {alert_time.tzinfo}")
         
         hours_since_alert = (now - alert_time).total_seconds() / 3600
         
-        if idx < 3:
-            print(f"[DEBUG] hours_since_alert = {hours_since_alert:.2f}h for {outcome.symbol}")
-        
-        current_price = get_current_price(outcome.symbol)
+        current_price = current_prices.get(outcome.symbol)
         if not current_price:
             continue
         
@@ -147,6 +177,7 @@ def check_outcomes():
                 outcome.profit_1h = ((outcome.alert_price - current_price) / outcome.alert_price) * 100
             outcome.checked_1h = True
             print(f"{outcome.symbol} 1h: {outcome.profit_1h:.2f}%")
+            updated_count += 1
         
         if hours_since_alert >= 4 and not outcome.checked_4h:
             outcome.price_4h = current_price
@@ -156,6 +187,7 @@ def check_outcomes():
                 outcome.profit_4h = ((outcome.alert_price - current_price) / outcome.alert_price) * 100
             outcome.checked_4h = True
             print(f"{outcome.symbol} 4h: {outcome.profit_4h:.2f}%")
+            updated_count += 1
         
         if hours_since_alert >= 24 and not outcome.checked_24h:
             outcome.price_24h = current_price
@@ -165,10 +197,10 @@ def check_outcomes():
                 outcome.profit_24h = ((outcome.alert_price - current_price) / outcome.alert_price) * 100
             outcome.checked_24h = True
             print(f"{outcome.symbol} 24h: {outcome.profit_24h:.2f}%")
-        
-        session.commit()
+            updated_count += 1
     
-    print("Outcome check complete")
+    session.commit()
+    print(f"Outcome check complete - updated {updated_count} records")
 
 
 def generate_report(days: int = 7):
