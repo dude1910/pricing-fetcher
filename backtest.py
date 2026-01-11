@@ -105,6 +105,7 @@ def create_outcome_from_alert(alert_id: int, symbol: str, alert_type: str,
 def check_outcomes():
     print("Checking alert outcomes...")
     now = datetime.now(timezone.utc)
+    print(f"[DEBUG] now = {now}, tzinfo = {now.tzinfo}")
     
     outcomes_to_check = session.query(AlertOutcome).filter(
         (AlertOutcome.checked_24h == False)
@@ -112,12 +113,25 @@ def check_outcomes():
     
     print(f"Found {len(outcomes_to_check)} outcomes to check")
     
-    for outcome in outcomes_to_check:
+    for idx, outcome in enumerate(outcomes_to_check):
+        # Log first 3 outcomes for debugging
+        if idx < 3:
+            print(f"[DEBUG] outcome.alert_time = {outcome.alert_time}, type = {type(outcome.alert_time)}, tzinfo = {getattr(outcome.alert_time, 'tzinfo', 'N/A')}")
+        
         # Ensure alert_time is timezone-aware (DB stores as naive UTC)
         alert_time = outcome.alert_time
         if alert_time.tzinfo is None:
+            if idx < 3:
+                print(f"[DEBUG] alert_time is naive, adding UTC timezone")
             alert_time = alert_time.replace(tzinfo=timezone.utc)
+        
+        if idx < 3:
+            print(f"[DEBUG] after fix: alert_time = {alert_time}, tzinfo = {alert_time.tzinfo}")
+        
         hours_since_alert = (now - alert_time).total_seconds() / 3600
+        
+        if idx < 3:
+            print(f"[DEBUG] hours_since_alert = {hours_since_alert:.2f}h for {outcome.symbol}")
         
         current_price = get_current_price(outcome.symbol)
         if not current_price:
