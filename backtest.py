@@ -7,6 +7,12 @@ import requests
 Base = declarative_base()
 
 
+TAKE_PROFIT_PCT = 5.0
+STOP_LOSS_PCT = -3.0
+TRAILING_STOP_TRIGGER = 3.0
+MAX_HOLD_HOURS = 4
+
+
 class AlertOutcome(Base):
     __tablename__ = 'alert_outcomes'
     id = Column(Integer, primary_key=True)
@@ -28,6 +34,13 @@ class AlertOutcome(Base):
     checked_1h = Column(Boolean, default=False)
     checked_4h = Column(Boolean, default=False)
     checked_24h = Column(Boolean, default=False)
+    
+    trade_result = Column(Float, nullable=True)
+    trade_exit_reason = Column(String, nullable=True)
+    trade_max_gain = Column(Float, nullable=True)
+    trade_max_drawdown = Column(Float, nullable=True)
+    trade_hold_minutes = Column(Integer, nullable=True)
+    trade_checked = Column(Boolean, default=False)
     
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -100,6 +113,104 @@ def create_outcome_from_alert(alert_id: int, symbol: str, alert_type: str,
     session.add(outcome)
     session.commit()
     print(f"Created outcome tracking for {symbol}")
+
+
+def simulate_trade(symbol: str, entry_price: float, alert_time: datetime, is_long: bool = True):
+    import yfinance as yf
+    
+    try:
+        ticker = yf.Ticker(symbol)
+        end_time = alert_time + timedelta(hours=MAX_HOLD_HOURS + 1)
+        
+        hist = ticker.history(start=alert_time, end=end_time, interval="5m")
+        
+        if hist.empty or len(hist) < 2:
+            hist = ticker.history(period="1d", interval="5m")
+        
+        if hist.empty:
+            return None
+        
+        max_gain = 0.0
+        max_drawdown = 0.0
+        trailing_stop_active = False
+        trailing_stop_level = STOP_LOSS_PCT
+        
+        for i, (idx, row) in enumerate(hist.iterrows()):
+            high = row['High']
+            low = row['Low']
+            close = row['Close']
+            
+            if is_long:
+                current_gain_high = ((high - entry_price) / entry_price) * 100
+                current_gain_low = ((low - entry_price) / entry_price) * 100
+                current_gain = ((close - entry_price) / entry_price) * 100
+            else:
+                current_gain_high = ((entry_price - low) / entry_price) * 100
+                current_gain_low = ((entry_price - high) / entry_price) * 100
+                current_gain = ((entry_price - close) / entry_price) * 100
+            
+            max_gain = max(max_gain, current_gain_high)
+            max_drawdown = min(max_drawdown, current_gain_low)
+            
+            if max_gain >= TRAILING_STOP_TRIGGER and not trailing_stop_active:
+                trailing_stop_active = True
+                trailing_stop_level = 0.0
+            
+            if trailing_stop_active:
+                new_stop = max_gain - 2.0
+                trailing_stop_level = max(trailing_stop_level, new_stop)
+            
+            if current_gain_high >= TAKE_PROFIT_PCT:
+                return {
+                    'result': TAKE_PROFIT_PCT,
+                    'exit_reason': 'take_profit',
+                    'max_gain': max_gain,
+                    'max_drawdown': max_drawdown,
+                    'hold_minutes': (i + 1) * 5
+                }
+            
+            if current_gain_low <= STOP_LOSS_PCT:
+                return {
+                    'result': STOP_LOSS_PCT,
+                    'exit_reason': 'stop_loss',
+                    'max_gain': max_gain,
+                    'max_drawdown': max_drawdown,
+                    'hold_minutes': (i + 1) * 5
+                }
+            
+            if trailing_stop_active and current_gain_low <= trailing_stop_level:
+                return {
+                    'result': trailing_stop_level,
+                    'exit_reason': 'trailing_stop',
+                    'max_gain': max_gain,
+                    'max_drawdown': max_drawdown,
+                    'hold_minutes': (i + 1) * 5
+                }
+            
+            if (i + 1) * 5 >= MAX_HOLD_HOURS * 60:
+                return {
+                    'result': current_gain,
+                    'exit_reason': 'timeout',
+                    'max_gain': max_gain,
+                    'max_drawdown': max_drawdown,
+                    'hold_minutes': (i + 1) * 5
+                }
+        
+        final_gain = ((hist['Close'].iloc[-1] - entry_price) / entry_price) * 100
+        if not is_long:
+            final_gain = -final_gain
+            
+        return {
+            'result': final_gain,
+            'exit_reason': 'end_of_data',
+            'max_gain': max_gain,
+            'max_drawdown': max_drawdown,
+            'hold_minutes': len(hist) * 5
+        }
+        
+    except Exception as e:
+        print(f"Trade simulation error for {symbol}: {e}")
+        return None
 
 
 def check_outcomes():
@@ -198,6 +309,23 @@ def check_outcomes():
             outcome.checked_24h = True
             print(f"{outcome.symbol} 24h: {outcome.profit_24h:.2f}%")
             updated_count += 1
+        
+        if hours_since_alert >= MAX_HOLD_HOURS and not outcome.trade_checked:
+            trade = simulate_trade(
+                symbol=outcome.symbol,
+                entry_price=outcome.alert_price,
+                alert_time=alert_time,
+                is_long=is_buy_signal
+            )
+            if trade:
+                outcome.trade_result = trade['result']
+                outcome.trade_exit_reason = trade['exit_reason']
+                outcome.trade_max_gain = trade['max_gain']
+                outcome.trade_max_drawdown = trade['max_drawdown']
+                outcome.trade_hold_minutes = trade['hold_minutes']
+                outcome.trade_checked = True
+                print(f"{outcome.symbol} TRADE: {trade['result']:+.2f}% ({trade['exit_reason']})")
+                updated_count += 1
     
     session.commit()
     print(f"Outcome check complete - updated {updated_count} records")
@@ -217,7 +345,6 @@ def generate_report(days: int = 7):
     
     total_alerts = len(outcomes)
     
-    # Categorize by alert type
     volume_spike_outcomes = [o for o in outcomes if 'volume_spike' in (o.alert_type or '')]
     extreme_outcomes = [o for o in outcomes if 'extreme' in (o.alert_type or '')]
     regular_outcomes = [o for o in outcomes if o.alert_type in ('spike_up', 'spike_down', None) or 
@@ -227,23 +354,31 @@ def generate_report(days: int = 7):
         if not outcomes_list:
             return {"count": 0, "avg_1h": 0, "avg_4h": 0, "avg_24h": 0, 
                     "win_rate_1h": 0, "win_rate_4h": 0, "win_rate_24h": 0,
-                    "median_24h": 0}
+                    "median_24h": 0, "trade_profit": 0, "trade_win_rate": 0,
+                    "take_profits": 0, "stop_losses": 0, "trailing_stops": 0}
         
         profits_1h = [o.profit_1h for o in outcomes_list if o.profit_1h is not None]
         profits_4h = [o.profit_4h for o in outcomes_list if o.profit_4h is not None]
         profits_24h = [o.profit_24h for o in outcomes_list if o.profit_24h is not None]
+        trade_results = [o.trade_result for o in outcomes_list if o.trade_result is not None]
         
         avg_1h = sum(profits_1h) / len(profits_1h) if profits_1h else 0
         avg_4h = sum(profits_4h) / len(profits_4h) if profits_4h else 0
         avg_24h = sum(profits_24h) / len(profits_24h) if profits_24h else 0
         
-        # Median (more robust than average for outliers)
         sorted_24h = sorted(profits_24h)
         median_24h = sorted_24h[len(sorted_24h) // 2] if sorted_24h else 0
         
         win_rate_1h = len([p for p in profits_1h if p > 0]) / len(profits_1h) * 100 if profits_1h else 0
         win_rate_4h = len([p for p in profits_4h if p > 0]) / len(profits_4h) * 100 if profits_4h else 0
         win_rate_24h = len([p for p in profits_24h if p > 0]) / len(profits_24h) * 100 if profits_24h else 0
+        
+        trade_profit = sum(trade_results) / len(trade_results) if trade_results else 0
+        trade_win_rate = len([t for t in trade_results if t > 0]) / len(trade_results) * 100 if trade_results else 0
+        
+        take_profits = len([o for o in outcomes_list if o.trade_exit_reason == 'take_profit'])
+        stop_losses = len([o for o in outcomes_list if o.trade_exit_reason == 'stop_loss'])
+        trailing_stops = len([o for o in outcomes_list if o.trade_exit_reason == 'trailing_stop'])
         
         return {
             "count": len(outcomes_list),
@@ -253,7 +388,12 @@ def generate_report(days: int = 7):
             "median_24h": median_24h,
             "win_rate_1h": win_rate_1h,
             "win_rate_4h": win_rate_4h,
-            "win_rate_24h": win_rate_24h
+            "win_rate_24h": win_rate_24h,
+            "trade_profit": trade_profit,
+            "trade_win_rate": trade_win_rate,
+            "take_profits": take_profits,
+            "stop_losses": stop_losses,
+            "trailing_stops": trailing_stops
         }
     
     all_stats = calc_stats(outcomes)
@@ -261,53 +401,60 @@ def generate_report(days: int = 7):
     extreme_stats = calc_stats(extreme_outcomes)
     regular_stats = calc_stats(regular_outcomes)
     
-    best = sorted([o for o in outcomes if o.profit_24h], key=lambda x: x.profit_24h, reverse=True)[:5]
-    worst = sorted([o for o in outcomes if o.profit_24h], key=lambda x: x.profit_24h)[:5]
+    trades_with_result = [o for o in outcomes if o.trade_result is not None]
+    total_trade_pnl = sum(o.trade_result for o in trades_with_result) if trades_with_result else 0
+    
+    best = sorted([o for o in outcomes if o.trade_result], key=lambda x: x.trade_result, reverse=True)[:5]
+    worst = sorted([o for o in outcomes if o.trade_result], key=lambda x: x.trade_result)[:5]
     
     report = f"""
-📊 <b>ALERT PERFORMANCE REPORT</b>
-📅 Last {days} days
+📊 <b>TRADING PERFORMANCE REPORT</b>
+📅 Last {days} days | Strategy: TP +{TAKE_PROFIT_PCT}% / SL {STOP_LOSS_PCT}%
 
-<b>OVERALL STATS</b>
-Total alerts: {total_alerts}
+💰 <b>REALISTIC TRADING RESULTS</b>
+Total trades: {len(trades_with_result)}
 ━━━━━━━━━━━━━━━━━━━━━
-Timeframe | Avg Profit | Win Rate
-1 hour    | {all_stats['avg_1h']:+.2f}%    | {all_stats['win_rate_1h']:.0f}%
-4 hours   | {all_stats['avg_4h']:+.2f}%    | {all_stats['win_rate_4h']:.0f}%
-24 hours  | {all_stats['avg_24h']:+.2f}%   | {all_stats['win_rate_24h']:.0f}%
-Median 24h: {all_stats['median_24h']:+.2f}%
+Total P&L: <b>{total_trade_pnl:+.1f}%</b>
+Avg per trade: {all_stats['trade_profit']:+.2f}%
+Win rate: {all_stats['trade_win_rate']:.0f}%
 
-🔥 <b>VOLUME SPIKE</b> ({volume_stats['count']} alerts)
-24h: {volume_stats['avg_24h']:+.2f}% avg | {volume_stats['median_24h']:+.2f}% med | {volume_stats['win_rate_24h']:.0f}% win
+✅ Take profits: {all_stats['take_profits']}
+🛡️ Trailing stops: {all_stats['trailing_stops']}
+❌ Stop losses: {all_stats['stop_losses']}
 
-🚨 <b>EXTREME MOVES</b> ({extreme_stats['count']} alerts)
-24h: {extreme_stats['avg_24h']:+.2f}% avg | {extreme_stats['median_24h']:+.2f}% med | {extreme_stats['win_rate_24h']:.0f}% win
+🔥 <b>VOLUME SPIKE TRADES</b> ({volume_stats['count']})
+Avg: {volume_stats['trade_profit']:+.2f}% | Win: {volume_stats['trade_win_rate']:.0f}%
+TP: {volume_stats['take_profits']} | TS: {volume_stats['trailing_stops']} | SL: {volume_stats['stop_losses']}
 
-📈 <b>REGULAR</b> ({regular_stats['count']} alerts)
-24h: {regular_stats['avg_24h']:+.2f}% avg | {regular_stats['median_24h']:+.2f}% med | {regular_stats['win_rate_24h']:.0f}% win
+🚨 <b>EXTREME MOVE TRADES</b> ({extreme_stats['count']})
+Avg: {extreme_stats['trade_profit']:+.2f}% | Win: {extreme_stats['trade_win_rate']:.0f}%
 
-🏆 <b>TOP 5 PERFORMERS</b>
+📈 <b>HOLD COMPARISON</b> (no stops)
+1h hold: {all_stats['avg_1h']:+.2f}% | 4h: {all_stats['avg_4h']:+.2f}% | 24h: {all_stats['avg_24h']:+.2f}%
+
+🏆 <b>BEST TRADES</b>
 """
     
     for o in best:
-        vol_str = f" ({o.volume_ratio:.1f}x vol)" if o.volume_ratio else ""
-        report += f"{o.symbol}: {o.profit_24h:+.2f}%{vol_str}\n"
+        exit_str = o.trade_exit_reason or 'N/A'
+        report += f"{o.symbol}: {o.trade_result:+.2f}% ({exit_str})\n"
     
-    report += f"\n💀 <b>WORST 5</b>\n"
+    report += f"\n💀 <b>WORST TRADES</b>\n"
     for o in worst:
-        vol_str = f" ({o.volume_ratio:.1f}x vol)" if o.volume_ratio else ""
-        report += f"{o.symbol}: {o.profit_24h:+.2f}%{vol_str}\n"
+        exit_str = o.trade_exit_reason or 'N/A'
+        report += f"{o.symbol}: {o.trade_result:+.2f}% ({exit_str})\n"
     
-    # Smarter verdict based on volume spike performance (our main strategy)
-    if volume_stats['count'] > 0:
-        if volume_stats['median_24h'] > 0 and volume_stats['win_rate_24h'] > 50:
-            verdict = "✅ Volume spike strategy profitable!"
-        elif volume_stats['median_24h'] > 0:
-            verdict = "🟡 Positive median, but low win rate"
+    if len(trades_with_result) >= 5:
+        if total_trade_pnl > 0 and all_stats['trade_win_rate'] >= 50:
+            verdict = f"✅ PROFITABLE! {total_trade_pnl:+.1f}% total, {all_stats['trade_win_rate']:.0f}% wins"
+        elif total_trade_pnl > 0:
+            verdict = f"🟡 Positive P&L ({total_trade_pnl:+.1f}%) but win rate {all_stats['trade_win_rate']:.0f}% is low"
+        elif all_stats['trade_win_rate'] >= 50:
+            verdict = f"🟡 Good win rate ({all_stats['trade_win_rate']:.0f}%) but negative P&L ({total_trade_pnl:+.1f}%)"
         else:
-            verdict = "⚠️ Needs parameter tuning"
+            verdict = f"❌ NOT PROFITABLE: {total_trade_pnl:+.1f}% P&L, {all_stats['trade_win_rate']:.0f}% wins"
     else:
-        verdict = "⚠️ No volume spike data yet"
+        verdict = f"⏳ Need more data ({len(trades_with_result)}/5 trades)"
     
     report += f"\n<b>VERDICT:</b> {verdict}"
     

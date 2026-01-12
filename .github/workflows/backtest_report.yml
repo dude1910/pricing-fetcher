@@ -23,6 +23,12 @@ jobs:
       run: |
         pip install yfinance sqlalchemy psycopg2-binary requests
 
+    - name: Run migrations
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      run: |
+        python migrate_add_trade_simulation.py
+
     - name: Check outcomes and generate report
       env:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
