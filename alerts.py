@@ -32,22 +32,16 @@ class AlertHistory(Base):
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-# === OPTIMIZED CONFIGURATION (based on backtest data) ===
-# Volume spike signals: +3.96% profit (KEEP)
-# Regular signals: -11.63% profit (DISABLE by default)
-
-DEFAULT_THRESHOLD_PERCENT = float(os.environ.get('ALERT_THRESHOLD_PERCENT', '5.0'))  # Was 3.0
-VOLUME_MULTIPLIER = float(os.environ.get('VOLUME_MULTIPLIER', '3.0'))  # Was 2.0
+DEFAULT_THRESHOLD_PERCENT = float(os.environ.get('ALERT_THRESHOLD_PERCENT', '5.0'))
+VOLUME_MULTIPLIER = float(os.environ.get('VOLUME_MULTIPLIER', '3.0'))
 LOOKBACK_HOURS = float(os.environ.get('ALERT_LOOKBACK_HOURS', '1.0'))
-ALERT_COOLDOWN_HOURS = float(os.environ.get('ALERT_COOLDOWN_HOURS', '12.0'))  # Was 4.0
+ALERT_COOLDOWN_HOURS = float(os.environ.get('ALERT_COOLDOWN_HOURS', '12.0'))
 
-# Quality filters to reduce noise
-MIN_PRICE = float(os.environ.get('MIN_PRICE', '0.50'))  # Skip ultra penny stocks
-MIN_VOLUME = int(os.environ.get('MIN_VOLUME', '50000'))  # Skip illiquid stocks
+MIN_PRICE = float(os.environ.get('MIN_PRICE', '0.50'))
+MIN_VOLUME = int(os.environ.get('MIN_VOLUME', '50000'))
 ENABLE_REGULAR_ALERTS = os.environ.get('ENABLE_REGULAR_ALERTS', 'false').lower() == 'true'
 
-# Extreme move threshold (always alert regardless of volume)
-EXTREME_MOVE_PERCENT = float(os.environ.get('EXTREME_MOVE_PERCENT', '20.0'))  # Was 15.0
+EXTREME_MOVE_PERCENT = float(os.environ.get('EXTREME_MOVE_PERCENT', '20.0'))
 
 
 def get_db_session():
@@ -96,49 +90,67 @@ def format_alert_message(symbol: str, name: str, price_before: float, price_afte
                          percent_change: float, alert_type: str, volume: int = None,
                          volume_ratio: float = None, quality_score: float = None) -> str:
     
-    # Quality indicator based on score
     if quality_score and quality_score >= 50:
-        quality_indicator = "⭐⭐⭐"  # Excellent
+        quality_indicator = "⭐⭐⭐"
     elif quality_score and quality_score >= 30:
-        quality_indicator = "⭐⭐"    # Good  
+        quality_indicator = "⭐⭐"
     elif quality_score and quality_score >= 15:
-        quality_indicator = "⭐"      # Moderate
+        quality_indicator = "⭐"
     else:
         quality_indicator = ""
+    
+    is_up = percent_change > 0
+    is_volume_confirmed = volume_ratio and volume_ratio >= VOLUME_MULTIPLIER
+    is_good_range = 5.0 <= abs(percent_change) <= 15.0
     
     if alert_type == 'volume_spike_up':
         emoji = "🚀📈🔥"
         direction = "UP"
-        signal_strength = f"🔥 VOLUME SPIKE {quality_indicator}"
+        signal_type = f"VOLUME SPIKE {quality_indicator}"
+        if is_good_range:
+            action = "✅ BUY SIGNAL"
+        else:
+            action = "👀 WATCH - Late entry risk"
     elif alert_type == 'volume_spike_down':
         emoji = "🔻📉🔥"
         direction = "DOWN"
-        signal_strength = f"🔥 VOLUME SPIKE {quality_indicator}"
+        signal_type = f"VOLUME SPIKE {quality_indicator}"
+        if is_good_range and volume_ratio and volume_ratio >= 2.5:
+            action = "👀 DIP WATCH - Potential bounce"
+        else:
+            action = "⏳ WAIT - Falling knife"
     elif alert_type == 'extreme_up':
         emoji = "🚨📈💥"
         direction = "UP"
-        signal_strength = "⚠️ EXTREME MOVE - HIGH RISK"
+        signal_type = "EXTREME MOVE"
+        action = "⚠️ HIGH RISK - Too late to buy"
     elif alert_type == 'extreme_down':
         emoji = "🚨📉💥"
         direction = "DOWN"
-        signal_strength = "⚠️ EXTREME MOVE - HIGH RISK"
+        signal_type = "EXTREME MOVE"
+        action = "⚠️ HIGH RISK - Wait for stabilization"
     elif alert_type == 'spike_up':
         emoji = "📈"
         direction = "UP"
-        signal_strength = "📊 Price Spike (no volume confirm)"
+        signal_type = "Price Spike"
+        action = "❓ NO VOLUME CONFIRM"
     elif alert_type == 'spike_down':
         emoji = "📉"
         direction = "DOWN"
-        signal_strength = "📊 Price Spike (no volume confirm)"
+        signal_type = "Price Spike"
+        action = "❓ NO VOLUME CONFIRM"
     else:
-        emoji = "📈" if 'up' in alert_type else "📉"
-        direction = "UP" if 'up' in alert_type else "DOWN"
-        signal_strength = "Signal"
+        emoji = "📈" if is_up else "📉"
+        direction = "UP" if is_up else "DOWN"
+        signal_type = "Signal"
+        action = "👀 WATCH"
     
     volume_text = ""
     if volume and volume_ratio and volume_ratio > 1.0:
         volume_formatted = f"{volume:,}"
         volume_text = f"\n📊 Volume: <code>{volume_formatted}</code> ({volume_ratio:.1f}x avg)"
+    
+    local_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=1))).strftime('%H:%M')
     
     message = f"""
 {emoji} <b>{symbol}</b> {direction} {abs(percent_change):.1f}% {emoji}
@@ -148,8 +160,9 @@ def format_alert_message(symbol: str, name: str, price_before: float, price_afte
 💰 ${price_before:.2f} → ${price_after:.2f}
 📈 Change: <b>{'+' if percent_change > 0 else ''}{percent_change:.2f}%</b>{volume_text}
 
-{signal_strength}
-🕐 {datetime.now(timezone.utc).strftime('%H:%M UTC')}
+{signal_type}
+<b>{action}</b>
+🕐 {local_time} (CET)
 
 <a href="https://finance.yahoo.com/quote/{symbol}">Yahoo Finance</a>
 """
@@ -161,7 +174,7 @@ def check_price_alerts(session, stock_prices_model):
     func_start = time_module.time()
     print(f"\nChecking for alerts...")
     
-    # Get engine from session and ensure alert_history table exists
+
     try:
         engine = session.get_bind()
         Base.metadata.create_all(engine)
@@ -174,7 +187,7 @@ def check_price_alerts(session, stock_prices_model):
     except:
         pass
     
-    # Load custom alert thresholds
+
     alerts_config = {}
     try:
         for alert in session.query(PriceAlert).filter(PriceAlert.enabled == True).all():
@@ -192,7 +205,7 @@ def check_price_alerts(session, stock_prices_model):
     try:
         from sqlalchemy import func, and_
         
-        # STEP 1: Get latest prices for all symbols (single query)
+
         step_start = time_module.time()
         latest_subq = session.query(
             stock_prices_model.symbol,
@@ -207,13 +220,13 @@ def check_price_alerts(session, stock_prices_model):
             )
         ).all()
         
-        # Build lookup dict
+
         current_data = {p.symbol: {'price': p.price, 'volume': getattr(p, 'volume', None), 'name': p.name} for p in latest_prices}
         symbols = list(current_data.keys())
         
         print(f"[TIMING] Query latest prices ({len(symbols)} symbols): {time_module.time() - step_start:.1f}s")
         
-        # STEP 2: Get historical prices for all symbols (single query)
+
         step_start = time_module.time()
         historical_subq = session.query(
             stock_prices_model.symbol,
@@ -233,7 +246,7 @@ def check_price_alerts(session, stock_prices_model):
         historical_data = {p.symbol: p.price for p in historical_prices}
         print(f"[TIMING] Query historical prices ({len(historical_data)} symbols): {time_module.time() - step_start:.1f}s")
         
-        # STEP 3: Get average volumes for all symbols (single query)
+
         step_start = time_module.time()
         avg_volumes_query = session.query(
             stock_prices_model.symbol,
@@ -247,7 +260,7 @@ def check_price_alerts(session, stock_prices_model):
         avg_volumes = {row.symbol: float(row.avg_vol) for row in avg_volumes_query if row.avg_vol}
         print(f"[TIMING] Query avg volumes ({len(avg_volumes)} symbols): {time_module.time() - step_start:.1f}s")
         
-        # STEP 4: Get recent alerts for cooldown check (single query)
+
         step_start = time_module.time()
         recent_alerts = session.query(AlertHistory.symbol).filter(
             AlertHistory.sent_at > cooldown_time
@@ -256,7 +269,7 @@ def check_price_alerts(session, stock_prices_model):
         cooldown_symbols = {a.symbol for a in recent_alerts}
         print(f"[TIMING] Query cooldown alerts ({len(cooldown_symbols)} in cooldown): {time_module.time() - step_start:.1f}s")
         
-        # STEP 5: Process all symbols in memory (no more DB queries in loop!)
+
         step_start = time_module.time()
         alerts_sent = 0
         candidates = []
@@ -267,14 +280,10 @@ def check_price_alerts(session, stock_prices_model):
             current_price = current_data[symbol]['price']
             current_volume = current_data[symbol]['volume']
             
-            # === QUALITY FILTER 1: Minimum price ===
-            # Skip ultra penny stocks (too volatile, high spread)
             if current_price < MIN_PRICE:
                 skipped_price += 1
                 continue
             
-            # === QUALITY FILTER 2: Minimum volume ===
-            # Skip illiquid stocks (can't actually trade them)
             if current_volume and current_volume < MIN_VOLUME:
                 skipped_volume += 1
                 continue
@@ -285,7 +294,7 @@ def check_price_alerts(session, stock_prices_model):
             
             percent_change = ((current_price - historical_price) / historical_price) * 100
             
-            # Calculate volume ratio
+
             volume_ratio = None
             avg_vol = avg_volumes.get(symbol)
             if current_volume and avg_vol and avg_vol > 0:
@@ -293,13 +302,7 @@ def check_price_alerts(session, stock_prices_model):
             
             threshold = alerts_config.get(symbol, DEFAULT_THRESHOLD_PERCENT)
             
-            # === OPTIMIZED ALERT LOGIC (based on backtest) ===
-            # Volume spike signals: +3.96% profit -> KEEP
-            # Regular signals: -11.63% profit -> DISABLED by default
-            # 
-            # Priority 1: Volume-confirmed signals (BEST QUALITY - profitable!)
-            # Priority 2: Extreme moves 20%+ (catch black swans)
-            # Priority 3: Regular alerts (DISABLED - they lose money!)
+
             
             is_significant_move = abs(percent_change) >= threshold
             is_volume_spike = volume_ratio and volume_ratio >= VOLUME_MULTIPLIER
@@ -307,31 +310,27 @@ def check_price_alerts(session, stock_prices_model):
             
             should_alert = False
             alert_type = None
-            quality_score = 0  # Higher = better signal
+            quality_score = 0
             
-            # Priority 1: Volume-confirmed signals (PROFITABLE!)
             if is_significant_move and is_volume_spike:
                 should_alert = True
                 alert_type = 'volume_spike_up' if percent_change > 0 else 'volume_spike_down'
-                # Quality score based on volume strength and price move
                 quality_score = (volume_ratio * 10) + abs(percent_change)
             
-            # Priority 2: Extreme moves 20%+ (catch black swans)
             elif is_extreme_move:
                 should_alert = True
                 alert_type = 'extreme_up' if percent_change > 0 else 'extreme_down'
-                quality_score = abs(percent_change)  # Just based on move size
+                quality_score = abs(percent_change)
             
-            # Priority 3: Regular alerts (DISABLED by default - they LOSE money!)
             elif ENABLE_REGULAR_ALERTS and is_significant_move:
                 should_alert = True
                 alert_type = 'spike_up' if percent_change > 0 else 'spike_down'
-                quality_score = abs(percent_change) * 0.5  # Lower priority
+                quality_score = abs(percent_change) * 0.5
             
             if not should_alert:
                 continue
             
-            # Check cooldown
+
             if symbol in cooldown_symbols:
                 continue
             
@@ -347,13 +346,13 @@ def check_price_alerts(session, stock_prices_model):
                 'quality_score': quality_score
             })
         
-        # Sort by quality score (best signals first)
+
         candidates.sort(key=lambda x: x['quality_score'], reverse=True)
         
         print(f"[TIMING] Process candidates ({len(candidates)} found, skipped {skipped_price} low price, {skipped_volume} low volume): {time_module.time() - step_start:.1f}s")
         
         
-        # STEP 6: Send alerts
+
         step_start = time_module.time()
         for c in candidates:
             message = format_alert_message(
