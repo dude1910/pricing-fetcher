@@ -32,10 +32,22 @@ class AlertHistory(Base):
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
-DEFAULT_THRESHOLD_PERCENT = float(os.environ.get('ALERT_THRESHOLD_PERCENT', '3.0'))
-VOLUME_MULTIPLIER = float(os.environ.get('VOLUME_MULTIPLIER', '2.0'))
+# === OPTIMIZED CONFIGURATION (based on backtest data) ===
+# Volume spike signals: +3.96% profit (KEEP)
+# Regular signals: -11.63% profit (DISABLE by default)
+
+DEFAULT_THRESHOLD_PERCENT = float(os.environ.get('ALERT_THRESHOLD_PERCENT', '5.0'))  # Was 3.0
+VOLUME_MULTIPLIER = float(os.environ.get('VOLUME_MULTIPLIER', '3.0'))  # Was 2.0
 LOOKBACK_HOURS = float(os.environ.get('ALERT_LOOKBACK_HOURS', '1.0'))
-ALERT_COOLDOWN_HOURS = float(os.environ.get('ALERT_COOLDOWN_HOURS', '4.0'))
+ALERT_COOLDOWN_HOURS = float(os.environ.get('ALERT_COOLDOWN_HOURS', '12.0'))  # Was 4.0
+
+# Quality filters to reduce noise
+MIN_PRICE = float(os.environ.get('MIN_PRICE', '0.50'))  # Skip ultra penny stocks
+MIN_VOLUME = int(os.environ.get('MIN_VOLUME', '50000'))  # Skip illiquid stocks
+ENABLE_REGULAR_ALERTS = os.environ.get('ENABLE_REGULAR_ALERTS', 'false').lower() == 'true'
+
+# Extreme move threshold (always alert regardless of volume)
+EXTREME_MOVE_PERCENT = float(os.environ.get('EXTREME_MOVE_PERCENT', '20.0'))  # Was 15.0
 
 
 def get_db_session():
@@ -82,24 +94,42 @@ def send_telegram_message(message: str) -> bool:
 
 def format_alert_message(symbol: str, name: str, price_before: float, price_after: float, 
                          percent_change: float, alert_type: str, volume: int = None,
-                         volume_ratio: float = None) -> str:
+                         volume_ratio: float = None, quality_score: float = None) -> str:
+    
+    # Quality indicator based on score
+    if quality_score and quality_score >= 50:
+        quality_indicator = "⭐⭐⭐"  # Excellent
+    elif quality_score and quality_score >= 30:
+        quality_indicator = "⭐⭐"    # Good  
+    elif quality_score and quality_score >= 15:
+        quality_indicator = "⭐"      # Moderate
+    else:
+        quality_indicator = ""
     
     if alert_type == 'volume_spike_up':
         emoji = "🚀📈🔥"
         direction = "UP"
-        signal_strength = "🔥 VOLUME SPIKE - STRONG SIGNAL"
+        signal_strength = f"🔥 VOLUME SPIKE {quality_indicator}"
     elif alert_type == 'volume_spike_down':
         emoji = "🔻📉🔥"
         direction = "DOWN"
-        signal_strength = "🔥 VOLUME SPIKE - STRONG SIGNAL"
+        signal_strength = f"🔥 VOLUME SPIKE {quality_indicator}"
     elif alert_type == 'extreme_up':
         emoji = "🚨📈💥"
         direction = "UP"
-        signal_strength = "⚠️ EXTREME MOVE"
+        signal_strength = "⚠️ EXTREME MOVE - HIGH RISK"
     elif alert_type == 'extreme_down':
         emoji = "🚨📉💥"
         direction = "DOWN"
-        signal_strength = "⚠️ EXTREME MOVE"
+        signal_strength = "⚠️ EXTREME MOVE - HIGH RISK"
+    elif alert_type == 'spike_up':
+        emoji = "📈"
+        direction = "UP"
+        signal_strength = "📊 Price Spike (no volume confirm)"
+    elif alert_type == 'spike_down':
+        emoji = "📉"
+        direction = "DOWN"
+        signal_strength = "📊 Price Spike (no volume confirm)"
     else:
         emoji = "📈" if 'up' in alert_type else "📉"
         direction = "UP" if 'up' in alert_type else "DOWN"
@@ -230,10 +260,24 @@ def check_price_alerts(session, stock_prices_model):
         step_start = time_module.time()
         alerts_sent = 0
         candidates = []
+        skipped_price = 0
+        skipped_volume = 0
         
         for symbol in symbols:
             current_price = current_data[symbol]['price']
             current_volume = current_data[symbol]['volume']
+            
+            # === QUALITY FILTER 1: Minimum price ===
+            # Skip ultra penny stocks (too volatile, high spread)
+            if current_price < MIN_PRICE:
+                skipped_price += 1
+                continue
+            
+            # === QUALITY FILTER 2: Minimum volume ===
+            # Skip illiquid stocks (can't actually trade them)
+            if current_volume and current_volume < MIN_VOLUME:
+                skipped_volume += 1
+                continue
             
             historical_price = historical_data.get(symbol)
             if not historical_price or historical_price == 0:
@@ -249,27 +293,40 @@ def check_price_alerts(session, stock_prices_model):
             
             threshold = alerts_config.get(symbol, DEFAULT_THRESHOLD_PERCENT)
             
-            # NEW SMART ALERT LOGIC:
-            # 1. Volume Spike Alert: price change >= threshold AND volume >= 2x (HIGH QUALITY)
-            # 2. Extreme Move Alert: price change >= 15% regardless of volume (EMERGENCY)
-            # 3. NO MORE noisy "regular spike" alerts without volume confirmation!
+            # === OPTIMIZED ALERT LOGIC (based on backtest) ===
+            # Volume spike signals: +3.96% profit -> KEEP
+            # Regular signals: -11.63% profit -> DISABLED by default
+            # 
+            # Priority 1: Volume-confirmed signals (BEST QUALITY - profitable!)
+            # Priority 2: Extreme moves 20%+ (catch black swans)
+            # Priority 3: Regular alerts (DISABLED - they lose money!)
             
             is_significant_move = abs(percent_change) >= threshold
             is_volume_spike = volume_ratio and volume_ratio >= VOLUME_MULTIPLIER
-            is_extreme_move = abs(percent_change) >= 15.0  # 15% is extreme
+            is_extreme_move = abs(percent_change) >= EXTREME_MOVE_PERCENT
             
             should_alert = False
             alert_type = None
+            quality_score = 0  # Higher = better signal
             
-            # Priority 1: Volume-confirmed signals (best quality)
+            # Priority 1: Volume-confirmed signals (PROFITABLE!)
             if is_significant_move and is_volume_spike:
                 should_alert = True
                 alert_type = 'volume_spike_up' if percent_change > 0 else 'volume_spike_down'
+                # Quality score based on volume strength and price move
+                quality_score = (volume_ratio * 10) + abs(percent_change)
             
-            # Priority 2: Extreme moves (catch black swans even without volume data)
+            # Priority 2: Extreme moves 20%+ (catch black swans)
             elif is_extreme_move:
                 should_alert = True
                 alert_type = 'extreme_up' if percent_change > 0 else 'extreme_down'
+                quality_score = abs(percent_change)  # Just based on move size
+            
+            # Priority 3: Regular alerts (DISABLED by default - they LOSE money!)
+            elif ENABLE_REGULAR_ALERTS and is_significant_move:
+                should_alert = True
+                alert_type = 'spike_up' if percent_change > 0 else 'spike_down'
+                quality_score = abs(percent_change) * 0.5  # Lower priority
             
             if not should_alert:
                 continue
@@ -286,10 +343,15 @@ def check_price_alerts(session, stock_prices_model):
                 'percent_change': percent_change,
                 'alert_type': alert_type,
                 'volume': current_volume,
-                'volume_ratio': volume_ratio
+                'volume_ratio': volume_ratio,
+                'quality_score': quality_score
             })
         
-        print(f"[TIMING] Process candidates ({len(candidates)} found): {time_module.time() - step_start:.1f}s")
+        # Sort by quality score (best signals first)
+        candidates.sort(key=lambda x: x['quality_score'], reverse=True)
+        
+        print(f"[TIMING] Process candidates ({len(candidates)} found, skipped {skipped_price} low price, {skipped_volume} low volume): {time_module.time() - step_start:.1f}s")
+        
         
         # STEP 6: Send alerts
         step_start = time_module.time()
@@ -302,11 +364,13 @@ def check_price_alerts(session, stock_prices_model):
                 percent_change=c['percent_change'],
                 alert_type=c['alert_type'],
                 volume=c['volume'],
-                volume_ratio=c['volume_ratio']
+                volume_ratio=c['volume_ratio'],
+                quality_score=c['quality_score']
             )
             
             vol_str = f" (vol: {c['volume_ratio']:.1f}x)" if c['volume_ratio'] else ""
-            print(f"ALERT: {c['symbol']} {c['percent_change']:.1f}%{vol_str}")
+            stars = "⭐" * min(3, int(c['quality_score'] / 15)) if c['quality_score'] >= 15 else ""
+            print(f"ALERT: {c['symbol']} {c['percent_change']:+.1f}%{vol_str} {c['alert_type']} Q:{c['quality_score']:.0f} {stars}")
             
             if send_telegram_message(message):
                 alert_record = AlertHistory(

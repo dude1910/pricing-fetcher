@@ -32,10 +32,17 @@ jobs:
         DATABASE_URL: ${{ secrets.DATABASE_URL }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        ALERT_THRESHOLD_PERCENT: ${{ vars.ALERT_THRESHOLD_PERCENT || '3.0' }}
-        VOLUME_MULTIPLIER: ${{ vars.VOLUME_MULTIPLIER || '2.0' }}
+        # === OPTIMIZED ALERT SETTINGS (based on backtest) ===
+        ALERT_THRESHOLD_PERCENT: ${{ vars.ALERT_THRESHOLD_PERCENT || '5.0' }}
+        VOLUME_MULTIPLIER: ${{ vars.VOLUME_MULTIPLIER || '3.0' }}
         ALERT_LOOKBACK_HOURS: ${{ vars.ALERT_LOOKBACK_HOURS || '1.0' }}
-        ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS || '4.0' }}
+        ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS || '12.0' }}
+        # === QUALITY FILTERS ===
+        MIN_PRICE: ${{ vars.MIN_PRICE || '0.50' }}
+        MIN_VOLUME: ${{ vars.MIN_VOLUME || '50000' }}
+        ENABLE_REGULAR_ALERTS: ${{ vars.ENABLE_REGULAR_ALERTS || 'false' }}
+        EXTREME_MOVE_PERCENT: ${{ vars.EXTREME_MOVE_PERCENT || '20.0' }}
+        # === SCRAPER SETTINGS ===
         BATCH_SIZE: '100'
         SYMBOLS_PER_RUN: '5000'
         MAX_RUNTIME_SECONDS: '600'

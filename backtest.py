@@ -217,13 +217,17 @@ def generate_report(days: int = 7):
     
     total_alerts = len(outcomes)
     
-    volume_spike_outcomes = [o for o in outcomes if o.volume_ratio and o.volume_ratio >= 2.0]
-    regular_outcomes = [o for o in outcomes if not o.volume_ratio or o.volume_ratio < 2.0]
+    # Categorize by alert type
+    volume_spike_outcomes = [o for o in outcomes if 'volume_spike' in (o.alert_type or '')]
+    extreme_outcomes = [o for o in outcomes if 'extreme' in (o.alert_type or '')]
+    regular_outcomes = [o for o in outcomes if o.alert_type in ('spike_up', 'spike_down', None) or 
+                        (o.alert_type and 'volume_spike' not in o.alert_type and 'extreme' not in o.alert_type)]
     
     def calc_stats(outcomes_list):
         if not outcomes_list:
             return {"count": 0, "avg_1h": 0, "avg_4h": 0, "avg_24h": 0, 
-                    "win_rate_1h": 0, "win_rate_4h": 0, "win_rate_24h": 0}
+                    "win_rate_1h": 0, "win_rate_4h": 0, "win_rate_24h": 0,
+                    "median_24h": 0}
         
         profits_1h = [o.profit_1h for o in outcomes_list if o.profit_1h is not None]
         profits_4h = [o.profit_4h for o in outcomes_list if o.profit_4h is not None]
@@ -232,6 +236,10 @@ def generate_report(days: int = 7):
         avg_1h = sum(profits_1h) / len(profits_1h) if profits_1h else 0
         avg_4h = sum(profits_4h) / len(profits_4h) if profits_4h else 0
         avg_24h = sum(profits_24h) / len(profits_24h) if profits_24h else 0
+        
+        # Median (more robust than average for outliers)
+        sorted_24h = sorted(profits_24h)
+        median_24h = sorted_24h[len(sorted_24h) // 2] if sorted_24h else 0
         
         win_rate_1h = len([p for p in profits_1h if p > 0]) / len(profits_1h) * 100 if profits_1h else 0
         win_rate_4h = len([p for p in profits_4h if p > 0]) / len(profits_4h) * 100 if profits_4h else 0
@@ -242,6 +250,7 @@ def generate_report(days: int = 7):
             "avg_1h": avg_1h,
             "avg_4h": avg_4h,
             "avg_24h": avg_24h,
+            "median_24h": median_24h,
             "win_rate_1h": win_rate_1h,
             "win_rate_4h": win_rate_4h,
             "win_rate_24h": win_rate_24h
@@ -249,6 +258,7 @@ def generate_report(days: int = 7):
     
     all_stats = calc_stats(outcomes)
     volume_stats = calc_stats(volume_spike_outcomes)
+    extreme_stats = calc_stats(extreme_outcomes)
     regular_stats = calc_stats(regular_outcomes)
     
     best = sorted([o for o in outcomes if o.profit_24h], key=lambda x: x.profit_24h, reverse=True)[:5]
@@ -265,28 +275,40 @@ Timeframe | Avg Profit | Win Rate
 1 hour    | {all_stats['avg_1h']:+.2f}%    | {all_stats['win_rate_1h']:.0f}%
 4 hours   | {all_stats['avg_4h']:+.2f}%    | {all_stats['win_rate_4h']:.0f}%
 24 hours  | {all_stats['avg_24h']:+.2f}%   | {all_stats['win_rate_24h']:.0f}%
+Median 24h: {all_stats['median_24h']:+.2f}%
 
-🔥 <b>VOLUME SPIKE SIGNALS</b> ({volume_stats['count']} alerts)
-1h: {volume_stats['avg_1h']:+.2f}% ({volume_stats['win_rate_1h']:.0f}% win)
-4h: {volume_stats['avg_4h']:+.2f}% ({volume_stats['win_rate_4h']:.0f}% win)
-24h: {volume_stats['avg_24h']:+.2f}% ({volume_stats['win_rate_24h']:.0f}% win)
+🔥 <b>VOLUME SPIKE</b> ({volume_stats['count']} alerts)
+24h: {volume_stats['avg_24h']:+.2f}% avg | {volume_stats['median_24h']:+.2f}% med | {volume_stats['win_rate_24h']:.0f}% win
 
-📈 <b>REGULAR SIGNALS</b> ({regular_stats['count']} alerts)
-1h: {regular_stats['avg_1h']:+.2f}% ({regular_stats['win_rate_1h']:.0f}% win)
-4h: {regular_stats['avg_4h']:+.2f}% ({regular_stats['win_rate_4h']:.0f}% win)
-24h: {regular_stats['avg_24h']:+.2f}% ({regular_stats['win_rate_24h']:.0f}% win)
+🚨 <b>EXTREME MOVES</b> ({extreme_stats['count']} alerts)
+24h: {extreme_stats['avg_24h']:+.2f}% avg | {extreme_stats['median_24h']:+.2f}% med | {extreme_stats['win_rate_24h']:.0f}% win
+
+📈 <b>REGULAR</b> ({regular_stats['count']} alerts)
+24h: {regular_stats['avg_24h']:+.2f}% avg | {regular_stats['median_24h']:+.2f}% med | {regular_stats['win_rate_24h']:.0f}% win
 
 🏆 <b>TOP 5 PERFORMERS</b>
 """
     
     for o in best:
-        report += f"{o.symbol}: {o.profit_24h:+.2f}% (24h)\n"
+        vol_str = f" ({o.volume_ratio:.1f}x vol)" if o.volume_ratio else ""
+        report += f"{o.symbol}: {o.profit_24h:+.2f}%{vol_str}\n"
     
     report += f"\n💀 <b>WORST 5</b>\n"
     for o in worst:
-        report += f"{o.symbol}: {o.profit_24h:+.2f}% (24h)\n"
+        vol_str = f" ({o.volume_ratio:.1f}x vol)" if o.volume_ratio else ""
+        report += f"{o.symbol}: {o.profit_24h:+.2f}%{vol_str}\n"
     
-    verdict = "✅ Strategy looks profitable!" if all_stats['avg_24h'] > 0 and all_stats['win_rate_24h'] > 50 else "⚠️ Needs improvement"
+    # Smarter verdict based on volume spike performance (our main strategy)
+    if volume_stats['count'] > 0:
+        if volume_stats['median_24h'] > 0 and volume_stats['win_rate_24h'] > 50:
+            verdict = "✅ Volume spike strategy profitable!"
+        elif volume_stats['median_24h'] > 0:
+            verdict = "🟡 Positive median, but low win rate"
+        else:
+            verdict = "⚠️ Needs parameter tuning"
+    else:
+        verdict = "⚠️ No volume spike data yet"
+    
     report += f"\n<b>VERDICT:</b> {verdict}"
     
     return report.strip()
