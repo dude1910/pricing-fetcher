@@ -1,17 +1,9 @@
 from pyfinviz.screener import Screener
 import pandas as pd
 import os
-from sqlalchemy import create_engine, Column, String
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-Base = declarative_base()
-
-class StockSymbol(Base):
-    __tablename__ = 'stock_symbols'
-    symbol = Column(String, primary_key=True)
-    name = Column(String)
-    exchange = Column(String)
+from models import Base, StockSymbol
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:

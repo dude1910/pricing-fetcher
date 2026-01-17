@@ -21,7 +21,13 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests sqlalchemy psycopg2-binary pyfinviz
+        pip install requests sqlalchemy psycopg2-binary pyfinviz pandas
+
+    - name: Fix schema (one-time migration)
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      run: |
+        python migrate_fix_schema.py
 
     - name: Run update symbols script
       env:
