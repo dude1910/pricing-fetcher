@@ -32,7 +32,7 @@ if DATABASE_URL.startswith("postgres://"):
 if "sslmode" not in DATABASE_URL:
     DATABASE_URL += "?sslmode=require" if "?" not in DATABASE_URL else "&sslmode=require"
 
-engine = create_engine(DATABASE_URL, connect_args={"options": "-c statement_timeout=60000"})
+engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 session = Session()
 
