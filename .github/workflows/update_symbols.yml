@@ -2,7 +2,8 @@ name: Update Stock Symbols
 
 on:
   schedule:
-    - cron: "0 21 * * *"  
+    - cron: "0 21 * * *"
+  workflow_dispatch:  
 
 jobs:
   update-symbols:
