@@ -162,37 +162,37 @@ def simulate_trade(symbol: str, entry_price: float, alert_time: datetime, is_lon
             
             if current_gain_high >= TAKE_PROFIT_PCT:
                 return {
-                    'result': TAKE_PROFIT_PCT,
+                    'result': float(TAKE_PROFIT_PCT),
                     'exit_reason': 'take_profit',
-                    'max_gain': max_gain,
-                    'max_drawdown': max_drawdown,
+                    'max_gain': float(max_gain),
+                    'max_drawdown': float(max_drawdown),
                     'hold_minutes': (i + 1) * 5
                 }
             
             if current_gain_low <= STOP_LOSS_PCT:
                 return {
-                    'result': STOP_LOSS_PCT,
+                    'result': float(STOP_LOSS_PCT),
                     'exit_reason': 'stop_loss',
-                    'max_gain': max_gain,
-                    'max_drawdown': max_drawdown,
+                    'max_gain': float(max_gain),
+                    'max_drawdown': float(max_drawdown),
                     'hold_minutes': (i + 1) * 5
                 }
             
             if trailing_stop_active and current_gain_low <= trailing_stop_level:
                 return {
-                    'result': trailing_stop_level,
+                    'result': float(trailing_stop_level),
                     'exit_reason': 'trailing_stop',
-                    'max_gain': max_gain,
-                    'max_drawdown': max_drawdown,
+                    'max_gain': float(max_gain),
+                    'max_drawdown': float(max_drawdown),
                     'hold_minutes': (i + 1) * 5
                 }
             
             if (i + 1) * 5 >= MAX_HOLD_HOURS * 60:
                 return {
-                    'result': current_gain,
+                    'result': float(current_gain),
                     'exit_reason': 'timeout',
-                    'max_gain': max_gain,
-                    'max_drawdown': max_drawdown,
+                    'max_gain': float(max_gain),
+                    'max_drawdown': float(max_drawdown),
                     'hold_minutes': (i + 1) * 5
                 }
         
@@ -201,10 +201,10 @@ def simulate_trade(symbol: str, entry_price: float, alert_time: datetime, is_lon
             final_gain = -final_gain
             
         return {
-            'result': final_gain,
+            'result': float(final_gain),
             'exit_reason': 'end_of_data',
-            'max_gain': max_gain,
-            'max_drawdown': max_drawdown,
+            'max_gain': float(max_gain),
+            'max_drawdown': float(max_drawdown),
             'hold_minutes': len(hist) * 5
         }
         
