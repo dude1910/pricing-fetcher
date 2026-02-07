@@ -42,6 +42,7 @@ MIN_VOLUME = int(os.environ.get('MIN_VOLUME', '50000'))
 ENABLE_REGULAR_ALERTS = os.environ.get('ENABLE_REGULAR_ALERTS', 'false').lower() == 'true'
 
 EXTREME_MOVE_PERCENT = float(os.environ.get('EXTREME_MOVE_PERCENT', '20.0'))
+MIN_QUALITY_SCORE = float(os.environ.get('MIN_QUALITY_SCORE', '50.0'))
 
 
 def get_db_session():
@@ -316,11 +317,15 @@ def check_price_alerts(session, stock_prices_model):
                 should_alert = True
                 alert_type = 'volume_spike_up' if percent_change > 0 else 'volume_spike_down'
                 quality_score = (volume_ratio * 10) + abs(percent_change)
+                
+
+                if alert_type == 'volume_spike_up' and quality_score < 70:
+                     should_alert = False
             
             elif is_extreme_move:
                 should_alert = True
                 alert_type = 'extreme_up' if percent_change > 0 else 'extreme_down'
-                quality_score = abs(percent_change)
+                quality_score = abs(percent_change) * 2.5  
             
             elif ENABLE_REGULAR_ALERTS and is_significant_move:
                 should_alert = True
@@ -328,6 +333,9 @@ def check_price_alerts(session, stock_prices_model):
                 quality_score = abs(percent_change) * 0.5
             
             if not should_alert:
+                continue
+            
+            if quality_score < MIN_QUALITY_SCORE:
                 continue
             
 

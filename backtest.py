@@ -10,7 +10,7 @@ Base = declarative_base()
 TAKE_PROFIT_PCT = 5.0
 STOP_LOSS_PCT = -3.0
 TRAILING_STOP_TRIGGER = 3.0
-MAX_HOLD_HOURS = 4
+MAX_HOLD_HOURS = 24
 
 
 class AlertOutcome(Base):
@@ -278,7 +278,8 @@ def check_outcomes():
         if not current_price:
             continue
         
-        is_buy_signal = 'up' in outcome.alert_type
+        # Simulate all as LONG (Buy) to see if 'buying the dip' works on down alerts
+        is_buy_signal = True
         
         if hours_since_alert >= 1 and not outcome.checked_1h:
             outcome.price_1h = current_price

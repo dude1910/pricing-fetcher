@@ -246,8 +246,16 @@ if __name__ == "__main__":
             step_start = time.time()
             check_price_alerts(session, StockPrice)
             log(f"[TIMING] check_price_alerts: {time.time() - step_start:.1f}s")
+            
+            log("Updating trade outcomes...")
+            step_start = time.time()
+            import backtest
+            backtest.sync_alerts_to_outcomes()
+            backtest.check_outcomes()
+            log(f"[TIMING] backtest_tracking: {time.time() - step_start:.1f}s")
+            
         except Exception as e:
-            log(f"Alert check error: {e}")
+            log(f"Alert/Backtest check error: {e}")
             import traceback
             traceback.print_exc()
         
