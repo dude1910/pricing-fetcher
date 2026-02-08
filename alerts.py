@@ -3,9 +3,11 @@ import requests
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, BigInteger
 from sqlalchemy.orm import declarative_base, sessionmaker
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 Base = declarative_base()
 
