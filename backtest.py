@@ -3,6 +3,9 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, BigInteger, text, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 Base = declarative_base()
 
@@ -11,6 +14,7 @@ TAKE_PROFIT_PCT = 5.0
 STOP_LOSS_PCT = -3.0
 TRAILING_STOP_TRIGGER = 3.0
 MAX_HOLD_HOURS = 24
+SLIPPAGE_PCT = 0.5  # Realistic entry penalty (Spread + Reaction Time) for Trade Republic
 
 
 class AlertOutcome(Base):
@@ -281,22 +285,26 @@ def check_outcomes():
         # Simulate all as LONG (Buy) to see if 'buying the dip' works on down alerts
         is_buy_signal = True
         
+        # Calculate realistic entry price (including slippage/spread)
+        # For Trade Republic, we assume we buy slightly higher than the alert price
+        effective_entry_price = outcome.alert_price * (1 + SLIPPAGE_PCT / 100)
+        
         if hours_since_alert >= 1 and not outcome.checked_1h:
             outcome.price_1h = current_price
             if is_buy_signal:
-                outcome.profit_1h = ((current_price - outcome.alert_price) / outcome.alert_price) * 100
+                outcome.profit_1h = ((current_price - effective_entry_price) / effective_entry_price) * 100
             else:
-                outcome.profit_1h = ((outcome.alert_price - current_price) / outcome.alert_price) * 100
+                outcome.profit_1h = ((effective_entry_price - current_price) / effective_entry_price) * 100
             outcome.checked_1h = True
-            print(f"{outcome.symbol} 1h: {outcome.profit_1h:.2f}%")
+            print(f"{outcome.symbol} 1h: {outcome.profit_1h:.2f}% (Entry: {effective_entry_price:.2f})")
             updated_count += 1
         
         if hours_since_alert >= 4 and not outcome.checked_4h:
             outcome.price_4h = current_price
             if is_buy_signal:
-                outcome.profit_4h = ((current_price - outcome.alert_price) / outcome.alert_price) * 100
+                outcome.profit_4h = ((current_price - effective_entry_price) / effective_entry_price) * 100
             else:
-                outcome.profit_4h = ((outcome.alert_price - current_price) / outcome.alert_price) * 100
+                outcome.profit_4h = ((effective_entry_price - current_price) / effective_entry_price) * 100
             outcome.checked_4h = True
             print(f"{outcome.symbol} 4h: {outcome.profit_4h:.2f}%")
             updated_count += 1
@@ -304,9 +312,9 @@ def check_outcomes():
         if hours_since_alert >= 24 and not outcome.checked_24h:
             outcome.price_24h = current_price
             if is_buy_signal:
-                outcome.profit_24h = ((current_price - outcome.alert_price) / outcome.alert_price) * 100
+                outcome.profit_24h = ((current_price - effective_entry_price) / effective_entry_price) * 100
             else:
-                outcome.profit_24h = ((outcome.alert_price - current_price) / outcome.alert_price) * 100
+                outcome.profit_24h = ((effective_entry_price - current_price) / effective_entry_price) * 100
             outcome.checked_24h = True
             print(f"{outcome.symbol} 24h: {outcome.profit_24h:.2f}%")
             updated_count += 1
@@ -314,7 +322,7 @@ def check_outcomes():
         if hours_since_alert >= MAX_HOLD_HOURS and not outcome.trade_checked:
             trade = simulate_trade(
                 symbol=outcome.symbol,
-                entry_price=outcome.alert_price,
+                entry_price=effective_entry_price,
                 alert_time=alert_time,
                 is_long=is_buy_signal
             )
@@ -410,7 +418,7 @@ def generate_report(days: int = 7):
     
     report = f"""
 📊 <b>TRADING PERFORMANCE REPORT</b>
-📅 Last {days} days | Strategy: TP +{TAKE_PROFIT_PCT}% / SL {STOP_LOSS_PCT}%
+📅 Last {days} days | Strategy: TP +{TAKE_PROFIT_PCT}% / SL {STOP_LOSS_PCT}% | Slippage: -{SLIPPAGE_PCT}%
 
 💰 <b>REALISTIC TRADING RESULTS</b>
 Total trades: {len(trades_with_result)}
