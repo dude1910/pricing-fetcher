@@ -3,6 +3,9 @@ import requests
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, BigInteger
 from sqlalchemy.orm import declarative_base, sessionmaker
+from dotenv import load_dotenv
+
+load_dotenv()
 
 Base = declarative_base()
 
@@ -313,19 +316,18 @@ def check_price_alerts(session, stock_prices_model):
             alert_type = None
             quality_score = 0
             
-            if is_significant_move and is_volume_spike:
-                should_alert = True
-                alert_type = 'volume_spike_up' if percent_change > 0 else 'volume_spike_down'
-                quality_score = (volume_ratio * 10) + abs(percent_change)
-                
-
-                if alert_type == 'volume_spike_up' and quality_score < 70:
-                     should_alert = False
-            
-            elif is_extreme_move:
+            if is_extreme_move:
                 should_alert = True
                 alert_type = 'extreme_up' if percent_change > 0 else 'extreme_down'
                 quality_score = abs(percent_change) * 2.5  
+            
+            # Volume spikes disabled based on backtest results (unprofitable with slippage)
+            elif is_significant_move and is_volume_spike:
+                # should_alert = True
+                # alert_type = 'volume_spike_up' if percent_change > 0 else 'volume_spike_down'
+                # quality_score = (volume_ratio * 10) + abs(percent_change)
+                pass
+
             
             elif ENABLE_REGULAR_ALERTS and is_significant_move:
                 should_alert = True
