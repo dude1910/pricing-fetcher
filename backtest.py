@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, BigInteger, text, func
 from sqlalchemy.orm import declarative_base, sessionmaker
 import requests
+import yfinance as yf
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -12,7 +13,7 @@ except ImportError:
 Base = declarative_base()
 
 
-TAKE_PROFIT_PCT = 5.0
+TAKE_PROFIT_PCT = 3.0
 STOP_LOSS_PCT = -3.0
 TRAILING_STOP_TRIGGER = 3.0
 MAX_HOLD_HOURS = 24
@@ -89,7 +90,6 @@ def send_telegram(message: str) -> bool:
 
 def get_current_price(symbol: str) -> float:
     try:
-        import yfinance as yf
         ticker = yf.Ticker(symbol)
         info = ticker.fast_info
         if hasattr(info, 'last_price') and info.last_price:
@@ -122,7 +122,6 @@ def create_outcome_from_alert(alert_id: int, symbol: str, alert_type: str,
 
 
 def simulate_trade(symbol: str, entry_price: float, alert_time: datetime, is_long: bool = True):
-    import yfinance as yf
     
     try:
         ticker = yf.Ticker(symbol)
@@ -220,7 +219,6 @@ def simulate_trade(symbol: str, entry_price: float, alert_time: datetime, is_lon
 
 
 def check_outcomes():
-    import yfinance as yf
     
     print("Checking alert outcomes...")
     now = datetime.now(timezone.utc)
@@ -243,7 +241,6 @@ def check_outcomes():
     # Batch download all prices at once (MUCH faster than individual requests)
     current_prices = {}
     try:
-        # yfinance batch download
         data = yf.download(symbols, period="1d", progress=False, threads=True)
         
         if len(symbols) == 1:
@@ -285,41 +282,58 @@ def check_outcomes():
             continue
         
         # Simulate all as LONG (Buy) to see if 'buying the dip' works on down alerts
-        is_buy_signal = True
+        # is_buy_signal = True
+        
+        # CHANGED: 'Buying the dip' on down alerts is a proven fast way to lose money
+        # We will only go LONG on 'up' alerts. For 'down' alerts, we simulate SHORT to see if momentum continues.
+        is_buy_signal = 'up' in (outcome.alert_type or '') if outcome.alert_type else True
         
         # Calculate realistic entry price (including slippage/spread)
-        # For Trade Republic, we assume we buy slightly higher than the alert price
-        effective_entry_price = outcome.alert_price * (1 + SLIPPAGE_PCT / 100)
-        
+        if is_buy_signal:
+            effective_entry_price = outcome.alert_price * (1 + SLIPPAGE_PCT / 100)
+        else:
+            effective_entry_price = outcome.alert_price * (1 - SLIPPAGE_PCT / 100)
+            
+        def get_historical_price_at_offset(hours):
+            try:
+                target_time = alert_time + timedelta(hours=hours)
+                hist = yf.Ticker(outcome.symbol).history(
+                    start=target_time - timedelta(minutes=10), 
+                    end=target_time + timedelta(hours=2), 
+                    interval="5m"
+                )
+                if not hist.empty:
+                    return float(hist['Close'].iloc[0])
+            except:
+                pass
+            return current_price
+            
         if hours_since_alert >= 1 and not outcome.checked_1h:
-            outcome.price_1h = current_price
-            if is_buy_signal:
-                outcome.profit_1h = ((current_price - effective_entry_price) / effective_entry_price) * 100
-            else:
-                outcome.profit_1h = ((effective_entry_price - current_price) / effective_entry_price) * 100
-            outcome.checked_1h = True
-            print(f"{outcome.symbol} 1h: {outcome.profit_1h:.2f}% (Entry: {effective_entry_price:.2f})")
-            updated_count += 1
+            p_1h = get_historical_price_at_offset(1)
+            if p_1h:
+                outcome.price_1h = p_1h
+                outcome.profit_1h = ((p_1h - effective_entry_price) / effective_entry_price) * 100 if is_buy_signal else ((effective_entry_price - p_1h) / effective_entry_price) * 100
+                outcome.checked_1h = True
+                print(f"{outcome.symbol} 1h: {outcome.profit_1h:.2f}% (Entry: {effective_entry_price:.2f})")
+                updated_count += 1
         
         if hours_since_alert >= 4 and not outcome.checked_4h:
-            outcome.price_4h = current_price
-            if is_buy_signal:
-                outcome.profit_4h = ((current_price - effective_entry_price) / effective_entry_price) * 100
-            else:
-                outcome.profit_4h = ((effective_entry_price - current_price) / effective_entry_price) * 100
-            outcome.checked_4h = True
-            print(f"{outcome.symbol} 4h: {outcome.profit_4h:.2f}%")
-            updated_count += 1
+            p_4h = get_historical_price_at_offset(4)
+            if p_4h:
+                outcome.price_4h = p_4h
+                outcome.profit_4h = ((p_4h - effective_entry_price) / effective_entry_price) * 100 if is_buy_signal else ((effective_entry_price - p_4h) / effective_entry_price) * 100
+                outcome.checked_4h = True
+                print(f"{outcome.symbol} 4h: {outcome.profit_4h:.2f}%")
+                updated_count += 1
         
         if hours_since_alert >= 24 and not outcome.checked_24h:
-            outcome.price_24h = current_price
-            if is_buy_signal:
-                outcome.profit_24h = ((current_price - effective_entry_price) / effective_entry_price) * 100
-            else:
-                outcome.profit_24h = ((effective_entry_price - current_price) / effective_entry_price) * 100
-            outcome.checked_24h = True
-            print(f"{outcome.symbol} 24h: {outcome.profit_24h:.2f}%")
-            updated_count += 1
+            p_24h = get_historical_price_at_offset(24)
+            if p_24h:
+                outcome.price_24h = p_24h
+                outcome.profit_24h = ((p_24h - effective_entry_price) / effective_entry_price) * 100 if is_buy_signal else ((effective_entry_price - p_24h) / effective_entry_price) * 100
+                outcome.checked_24h = True
+                print(f"{outcome.symbol} 24h: {outcome.profit_24h:.2f}%")
+                updated_count += 1
         
         if hours_since_alert >= MAX_HOLD_HOURS and not outcome.trade_checked:
             trade = simulate_trade(

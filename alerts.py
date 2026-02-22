@@ -42,8 +42,8 @@ VOLUME_MULTIPLIER = float(os.environ.get('VOLUME_MULTIPLIER', '3.0'))
 LOOKBACK_HOURS = float(os.environ.get('ALERT_LOOKBACK_HOURS', '1.0'))
 ALERT_COOLDOWN_HOURS = float(os.environ.get('ALERT_COOLDOWN_HOURS', '12.0'))
 
-MIN_PRICE = float(os.environ.get('MIN_PRICE', '0.50'))
-MIN_VOLUME = int(os.environ.get('MIN_VOLUME', '50000'))
+MIN_PRICE = float(os.environ.get('MIN_PRICE', '10.0'))
+MIN_VOLUME = int(os.environ.get('MIN_VOLUME', '500000'))
 ENABLE_REGULAR_ALERTS = os.environ.get('ENABLE_REGULAR_ALERTS', 'false').lower() == 'true'
 
 EXTREME_MOVE_PERCENT = float(os.environ.get('EXTREME_MOVE_PERCENT', '20.0'))
