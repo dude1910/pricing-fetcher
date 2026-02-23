@@ -131,10 +131,10 @@ def format_alert_message(symbol: str, name: str, price_before: float, price_afte
         signal_type = "EXTREME MOVE"
         action = "⚠️ HIGH RISK - Too late to buy"
     elif alert_type == 'extreme_down':
-        emoji = "🚨📉💥"
+        emoji = "📉💲🔥"
         direction = "DOWN"
-        signal_type = "EXTREME MOVE"
-        action = "⚠️ HIGH RISK - Wait for stabilization"
+        signal_type = "OVERSOLD DIP"
+        action = "✅ BUY SIGNAL - High probability bounce"
     elif alert_type == 'spike_up':
         emoji = "📈"
         direction = "UP"
@@ -319,9 +319,10 @@ def check_price_alerts(session, stock_prices_model):
             quality_score = 0
             
             if is_extreme_move:
-                should_alert = True
-                alert_type = 'extreme_up' if percent_change > 0 else 'extreme_down'
-                quality_score = abs(percent_change) * 2.5  
+                if percent_change < 0 and volume_ratio and volume_ratio >= 2.0:
+                    should_alert = True
+                    alert_type = 'extreme_down'
+                    quality_score = abs(percent_change) * 2.5 + (volume_ratio * 10)
             
             # Volume spikes disabled based on backtest results (unprofitable with slippage)
             elif is_significant_move and is_volume_spike:

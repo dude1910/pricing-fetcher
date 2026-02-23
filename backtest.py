@@ -284,9 +284,11 @@ def check_outcomes():
         # Simulate all as LONG (Buy) to see if 'buying the dip' works on down alerts
         # is_buy_signal = True
         
-        # CHANGED: 'Buying the dip' on down alerts is a proven fast way to lose money
-        # We will only go LONG on 'up' alerts. For 'down' alerts, we simulate SHORT to see if momentum continues.
-        is_buy_signal = 'up' in (outcome.alert_type or '') if outcome.alert_type else True
+        # We will go LONG on 'up' alerts AND 'extreme_down' alerts (which are now treated as dip buys)
+        if outcome.alert_type == 'extreme_down':
+            is_buy_signal = True
+        else:
+            is_buy_signal = 'up' in (outcome.alert_type or '') if outcome.alert_type else True
         
         # Calculate realistic entry price (including slippage/spread)
         if is_buy_signal:
