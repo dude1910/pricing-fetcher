@@ -243,20 +243,21 @@ def check_outcomes():
     try:
         data = yf.download(symbols, period="1d", progress=False, threads=True)
         
-        if len(symbols) == 1:
-            # Single symbol returns Series, not DataFrame with MultiIndex
-            symbol = symbols[0]
-            if 'Close' in data and len(data['Close']) > 0:
-                current_prices[symbol] = float(data['Close'].iloc[-1])
-        else:
-            # Multiple symbols returns DataFrame with MultiIndex columns
+        if hasattr(data.columns, 'nlevels') and data.columns.nlevels > 1:
+            # MultiIndex columns (newer yfinance always returns this, or multiple symbols in older)
             if 'Close' in data.columns.get_level_values(0):
                 close_prices = data['Close']
                 for symbol in symbols:
-                    if symbol in close_prices.columns:
+                    if symbol in close_prices:
                         price = close_prices[symbol].dropna()
                         if len(price) > 0:
                             current_prices[symbol] = float(price.iloc[-1])
+        else:
+            # Single level column (older yfinance with 1 symbol string)
+            if 'Close' in data.columns:
+                close_prices = data['Close'].dropna()
+                if len(close_prices) > 0:
+                    current_prices[symbols[0]] = float(close_prices.iloc[-1])
         
         print(f"[DEBUG] Got prices for {len(current_prices)} symbols")
     except Exception as e:
