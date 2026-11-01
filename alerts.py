@@ -57,6 +57,8 @@ def get_db_session():
     
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql+psycopg2://")
+    elif database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     
     if "sslmode" not in database_url:
         database_url += "?sslmode=require" if "?" not in database_url else "&sslmode=require"

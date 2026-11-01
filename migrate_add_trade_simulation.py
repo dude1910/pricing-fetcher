@@ -7,6 +7,8 @@ if not DATABASE_URL:
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://")
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 if "sslmode" not in DATABASE_URL:
     DATABASE_URL += "?sslmode=require" if "?" not in DATABASE_URL else "&sslmode=require"
